@@ -27,7 +27,7 @@ let wk_gadgetmap = {
     "pop rax": 0x0002C827,
     "pop rsp": 0x00099A22,
 
-    "mov [rdi], rsi": 0x00A2D5B8,
+    "mov [rdi], rsi": 0x00A2D5B8, //check
     "mov [rdi], rax": 0x0003A79A,
     "mov [rdi], eax": 0x0003A79B,
 
@@ -36,13 +36,13 @@ let wk_gadgetmap = {
     "shl rax, 4"     : 0x00278F36,
 
     //branching specific gadgets
-    "cmp [rcx], eax" : 0x00E4EEDB,
+    "cmp [rcx], eax" : 0x00E4EEDB, //check
     "sete al"        : 0x00022549,
     "seta al"        : 0x0000C94F,
     "setb al"        : 0x0015E348,
     "setg al"        : 0x002F89AA,
     "setl al"        : 0x000E0D91,
-    "shl rax, 3"     : 0x01A26823,
+    "shl rax, 3"     : 0x01A26823, //check
     "add rax, rcx"   : 0x000B0E59,
     "mov rax, [rax]" : 0x00047FEC,
     "inc dword [rax]": 0x004971AA,
@@ -383,7 +383,7 @@ const OFFSET_KERNEL_STACK_SYS_SCHED_YIELD_RET   = 0x00000808;
 
 // Kernel text-relative offsets
 const OFFSET_KERNEL_DATA                        = 0x00BD0000;
-const OFFSET_KERNEL_SYS_SCHED_YIELD_RET         = 0x00559A92;
+const OFFSET_KERNEL_SYS_SCHED_YIELD_RET         = 0x00559AD2;
 const OFFSET_KERNEL_ALLPROC                     = 0x0333DC58;
 const OFFSET_KERNEL_SECURITY_FLAGS              = 0x07036474;
 const OFFSET_KERNEL_TARGETID                    = 0x0703647D;
