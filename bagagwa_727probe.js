@@ -348,76 +348,78 @@
         var ourTid  = B(root.read64(tidOut));
         var ourPid  = S(0x014, 0n, 0n, 0n, 0n, 0n, 0n);
         var ourPpid = S(0x027, 0n, 0n, 0n, 0n, 0n, 0n);
-        var pid1    = 0n;
-        var pid0    = 0n;
         out("IDS", "tid=" + hex(ourTid) + " pid=" + hex(ourPid)
             + " ppid=" + hex(ourPpid) + " id0=" + hex(id0), "dim");
 
-        /* LARGE out buffer so a full-table copyout is visible. */
-        var BIGOUT = 0x400;
+        /* === PRE-FILL: submit 32 requests, complete them via write. === */
+        var PF_N = 32;
+        var pfReqs = zeros(malloc(0x28 * PF_N), 0x28 * PF_N);
+        var pfFdb = new Uint8Array(8);
+        pfFdb[0] = rfd & 0xff; pfFdb[1] = (rfd >> 8) & 0xff;
+        pfFdb[2] = (rfd >> 16) & 0xff; pfFdb[3] = (rfd >> 24) & 0xff;
+        for (var pfi = 0; pfi < PF_N; pfi++)
+            root.write_buffer(pfReqs + BigInt(pfi * 0x28 + 0x20), pfFdb);
+        var pfIds = zeros(malloc(PF_N * 8), PF_N * 8);
+        var pfSub = S(0x29D, 0x1001n, pfReqs, BigInt(PF_N), 3n, pfIds);
+        out("PREFILL", "submit n=" + PF_N + " ret=" + hex(pfSub), pfSub === 0n ? "ok" : "warn");
+        var pfWb = malloc(0x80);
+        var pfWbytes = new Uint8Array(0x80);
+        for (var pfi2 = 0; pfi2 < 0x80; pfi2++) pfWbytes[pfi2] = 0x41 + (pfi2 & 0x3f);
+        root.write_buffer(pfWb, pfWbytes);
+        S(0x004, BigInt(wfd), pfWb, BigInt(PF_N), 0n, 0n, 0n);
+        for (var pfi3 = 0; pfi3 < 500; pfi3++) S(0x14B, 0n, 0n, 0n, 0n, 0n, 0n);
+        if (!canary()) {
+            out("WEDGE", "after prefill completion", "err");
+            chip(elState, "bad", "wedge");
+            return;
+        }
+
+        /* Large out buffer: 8 KB, so any count is visible. */
+        var BIGOUT = 0x2000;
         var bigOut = malloc(BIGOUT);
         var bigSent = new Uint8Array(BIGOUT);
         for (var bi2 = 0; bi2 < BIGOUT; bi2++) bigSent[bi2] = 0xEE;
 
         var shapes = [];
 
-        /* === Section 0: pid pivot. All other args held to the shape that just
-         *     wrote. arg1 sweep: ourPid, kernel pid (0), init (1), ourPpid,
-         *     small offsets around our pid. === */
-        [
-            ["ourPid",   ourPid],
-            ["ourPid+1", ourPid + 1n],
-            ["ourPid-1", ourPid - 1n],
-            ["ourPid<<1", ourPid << 1n],
-            ["ourPid>>1", ourPid >> 1n],
-            ["ourPpid",  ourPpid],
-            ["0",        0n],
-            ["1",        1n],
-            ["2",        2n]
-        ].forEach(function (e) {
-            shapes.push({ name: "P1=" + e[0],
-                args: function () { return [e[1], 0n, id0, 0n, bigOut, 0n]; } });
+        /* === Sweep-1: a3 (req_id) walk. a2=0, a4=1. === */
+        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n, 12n, 13n, 14n, 15n,
+         0x10n, 0x11n, 0x12n, 0x18n, 0x20n, 0x28n, 0x30n, 0x40n, 0x50n, 0x60n,
+         0x70n, 0x80n, 0x90n, 0xa0n, 0xc0n, 0xe0n, 0x100n, 0x120n, 0x140n,
+         0x180n, 0x1c0n, 0x200n, 0x220n, 0x228n, 0x229n, 0x230n, 0x240n,
+         0x280n, 0x300n, 0x400n, 0x800n, 0x1000n, 0x10000n, 0x100000n,
+         0x1000000n, 0x10000000n].forEach(function (z) {
+            shapes.push({ name: "S1a3=" + hex(z),
+                args: function () { return [ourPid, 0n, z, 1n, bigOut, 0n]; } });
+        });
+        [["id0", id0], ["idLo32", idLow32], ["idLo16", idLow16], ["idHi32", idHigh32],
+         ["id0>>16", id0 >> 16n], ["id0>>32", id0 >> 32n], ["id0>>48", id0 >> 48n],
+         ["id0&0xff", id0 & 0xffn], ["id0&0xffffffff", id0 & 0xFFFFFFFFn],
+         ["id0^1", id0 ^ 1n], ["idsPtr", idsPtr], ["reqsPtr", reqsPtr]].forEach(function (e) {
+            shapes.push({ name: "S1" + e[0],
+                args: function () { return [ourPid, 0n, e[1], 1n, bigOut, 0n]; } });
         });
 
-        /* === Section A: arg2 sweep with arg1 = ourPid (the confirmed-good pid).
-         *     If arg2 is a count, some values may copy more bytes. === */
-        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 0x10n, 0x20n, 0x28n, 0x40n, 0x80n,
-         0x100n, 0x200n, 0x228n, 0x229n, 0x400n, 0x800n].forEach(function (y) {
-            shapes.push({ name: "A2=" + y,
-                args: function () { return [ourPid, y, id0, 0n, bigOut, 0n]; } });
+        /* === Sweep-2: a2 (count) sweep. a3=id0, a4=1. === */
+        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 16n, 32n, 64n, 128n,
+         256n, 512n, 1024n, 2048n, 4096n, 0x228n, 0x2280n, 0x8000n].forEach(function (y) {
+            shapes.push({ name: "S2a2=" + y,
+                args: function () { return [ourPid, y, id0, 1n, bigOut, 0n]; } });
         });
 
-        /* === Section B: arg3 sweep with arg1 = ourPid, arg2 = 1.
-         *     arg3 is the primary candidate for req_id / slot. === */
-        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 0x10n, 0x28n, 0x40n, 0x80n,
-         0x100n, 0x228n, 0x400n, 0x1000n, 0x10000n, 0x100000n, 0x1000000n,
-         0x10000000n, id0, idLow32, idHigh32, idLow16].forEach(function (z) {
-            shapes.push({ name: "A3=" + hex(z),
-                args: function () { return [ourPid, 1n, z, 0n, bigOut, 0n]; } });
+        /* === Sweep-3: a5 offsets and a4 alternates with a3=id0. === */
+        [["bigOut", bigOut], ["bigOut+0x10", bigOut + 0x10n],
+         ["bigOut+0x40", bigOut + 0x40n], ["bigOut+0x100", bigOut + 0x100n],
+         ["bigOut+0x800", bigOut + 0x800n], ["idsPtr", idsPtr],
+         ["reqsPtr", reqsPtr], ["idBuf", idBuf]].forEach(function (e) {
+            shapes.push({ name: "S3a5=" + e[0],
+                args: function () { return [ourPid, 0n, id0, 1n, e[1], 0n]; } });
+        });
+        [2n, 3n, 4n, 8n, 0x10n, 0x20n, 0x40n, 0x100n, 0x228n].forEach(function (w) {
+            shapes.push({ name: "S3a4=" + w,
+                args: function () { return [ourPid, 0n, id0, w, bigOut, 0n]; } });
         });
 
-        /* === Section C: arg4 sweep with arg1 = ourPid, arg2 = 1, arg3 = id0. === */
-        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 0x10n, 0x28n, 0x40n, 0x80n,
-         0x100n, 0x228n, 0x400n].forEach(function (w) {
-            shapes.push({ name: "A4=" + w,
-                args: function () { return [ourPid, 1n, id0, w, bigOut, 0n]; } });
-        });
-
-        /* === Section D: combinations after the pid pivot. === */
-        [
-            ["P,A2=1,A3=1,A4=0",   [ourPid, 1n, 1n, 0n, bigOut, 0n]],
-            ["P,A2=1,A3=2,A4=0",   [ourPid, 1n, 2n, 0n, bigOut, 0n]],
-            ["P,A2=1,A3=0,A4=0",   [ourPid, 1n, 0n, 0n, bigOut, 0n]],
-            ["P,A2=0x228,A3=0,A4=0", [ourPid, 0x228n, 0n, 0n, bigOut, 0n]],
-            ["P,A2=1,A3=id0,A4=0", [ourPid, 1n, id0, 0n, bigOut, 0n]],
-            ["P,A2=1,A3=id0,A4=1", [ourPid, 1n, id0, 1n, bigOut, 0n]],
-            ["P,A2=1,A3=idLo32,A4=1", [ourPid, 1n, idLow32, 1n, bigOut, 0n]],
-            ["P,A2=1,A3=idLo16,A4=1", [ourPid, 1n, idLow16, 1n, bigOut, 0n]]
-        ].forEach(function (e) {
-            shapes.push({ name: "D " + e[0], args: function () { return e[1]; } });
-        });
-
-        var counts = [1n];
         var liveIds = [id0];
         out("SWEEP", liveIds.length + " id(s), " + shapes.length + " shapes", "dim");
 
@@ -425,6 +427,7 @@
         var wedged = false;
         var NON_EFAULT = [];
         var WRITES = [];
+        var MAXBYTES = 0;
 
         function dumpBuf(u8, n) {
             var s = "";
@@ -444,24 +447,29 @@
             }
             var got3 = readBytes(bigOut, BIGOUT);
             var changed3 = !bytesEqual(got3, bigSent);
-            if (changed3) hits++;
             var diffBytes = 0;
             for (var di = 0; di < BIGOUT; di++) if (got3[di] !== 0xEE) diffBytes++;
-            if (changed3) WRITES.push(sh3.name + "->ret=" + hex(ret3) + " bytes=" + diffBytes
-                + " " + dumpBuf(got3, diffBytes < 64 ? diffBytes : 64));
+            if (diffBytes > MAXBYTES) MAXBYTES = diffBytes;
+            if (changed3) {
+                hits++;
+                WRITES.push(sh3.name + "->ret=" + hex(ret3) + " bytes=" + diffBytes
+                    + " " + dumpBuf(got3, diffBytes < 64 ? diffBytes : 64));
+            }
             if (ret3 !== 0xen) NON_EFAULT.push(sh3.name + "=" + hex(ret3));
             out("CALL", sh3.name + " -> " + hex(ret3)
                 + (changed3 ? "  BYTES=" + diffBytes + "  " + dumpBuf(got3, Math.min(diffBytes, 32)) : ""),
-                (changed3 || (ret3 !== 0xen && ret3 !== 0x1n && ret3 !== 0x3n)) ? "ok" : "dim");
+                changed3 ? "ok" : "dim");
         }
 
         if (WRITES.length) {
-            out("WRITES", WRITES.join("  ||  "), "ok");
+            out("WRITES", WRITES.slice(0, 8).join("  ||  ")
+                + (WRITES.length > 8 ? "  ...+" + (WRITES.length - 8) + " more" : ""), "ok");
         } else {
             out("WRITES", "no writes across the sweep", "dim");
         }
+        out("MAXBYTES", "max bytes written across all shapes = " + MAXBYTES, MAXBYTES > 4 ? "ok" : "dim");
         if (NON_EFAULT.length) {
-            out("NON-EFAULT", NON_EFAULT.join("  "), "ok");
+            out("NON-EFAULT", NON_EFAULT.slice(0, 60).join("  "), "ok");
         } else {
             out("NON-EFAULT", "every shape returned EFAULT", "dim");
         }
