@@ -173,6 +173,7 @@
 
     var LOG = [];
     var LOGKEY = "b727_sc_log";
+    var DISCORD_WEBHOOK = "https://discordapp.com/api/webhooks/1522997605850812438/X8kBdpeLt9YDlW6eS44iJtVXSgcrqpEJernRvnmf9weJQZ80QvpWSn5d-HMCYJ91MT6p";
     try { var persisted = localStorage.getItem(LOGKEY); } catch (e) { }
     if (persisted) {
         var tail = persisted.slice(-4000).split("\n").filter(function (l) { return l.length; });
@@ -213,20 +214,34 @@
             out("SENDLOGS", "empty log", "warn");
             return;
         }
+        var payload = String(contents).slice(0, 1950);
         try {
-            var r = await fetch("/api/logs", {
+            var r = await fetch(DISCORD_WEBHOOK, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ source: "bagagwa_727probe", log: contents })
+                body: JSON.stringify({ username: "Bagagwa Logs", content: payload })
             });
-            var data = {};
-            try { data = await r.json(); } catch (e) { }
-            if (!r.ok) throw new Error((data && data.error) || "send failed");
-            notify("send logs: saved to logs.txt");
-            out("SENDLOGS", "saved to server logs.txt", "ok");
+            if (!r.ok) throw new Error("discord " + r.status);
+            notify("send logs: posted to Discord webhook");
+            out("SENDLOGS", "posted to Discord webhook", "ok");
+            return;
         } catch (e) {
-            notify("send logs failed: " + (e && e.message ? e.message : String(e)));
-            out("SENDLOGS", String(e && e.message ? e.message : e), "err");
+            try {
+                var fallback = await fetch("/api/logs", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ source: "bagagwa_727probe", log: contents })
+                });
+                var data = {};
+                try { data = await fallback.json(); } catch (err) { }
+                if (!fallback.ok) throw new Error((data && data.error) || "send failed");
+                notify("send logs: local fallback saved to logs.txt");
+                out("SENDLOGS", "local fallback saved", "warn");
+                return;
+            } catch (fallbackErr) {
+                notify("send logs failed: " + (e && e.message ? e.message : String(e)) + " | fallback: " + (fallbackErr && fallbackErr.message ? fallbackErr.message : String(fallbackErr)));
+                out("SENDLOGS", String(e && e.message ? e.message : e), "err");
+            }
         }
     }
     function out(tag, detail, cls) {
