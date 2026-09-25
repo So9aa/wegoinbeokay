@@ -113,6 +113,7 @@
         '  <span class="b727r-chip" id="b-fw"></span>',
         '  <span class="b727r-chip run" id="b-s">starting</span>',
         '  <span class="b727r-spacer"></span>',
+        '  <button class="b727r-btn" id="b-sendlogs">send logs</button>',
         '  <button class="b727r-btn" id="b-dl">download log</button>',
         '</div>',
         '<pre class="b727r-out" id="b-out"></pre>',
@@ -126,6 +127,7 @@
 
     var LOG = [];
     var LOGKEY = "b727r_sc_log";
+    var DISCORD_WEBHOOK = "https://discordapp.com/api/webhooks/1522997605850812438/X8kBdpeLt9YDlW6eS44iJtVXSgcrqpEJernRvnmf9weJQZ80QvpWSn5d-HMCYJ91MT6p";
 
     function stamp() {
         var d = new Date();
@@ -154,7 +156,48 @@
     }
     function notify(m) { try { if (root.send_notification) root.send_notification(m); } catch (e) { } }
     function setChip(cls, text) { elS.className = "b727r-chip " + cls; elS.textContent = text; }
+    function getConsoleLogText() {
+        try {
+            if (elOut && typeof elOut.textContent === "string" && elOut.textContent.trim()) {
+                return elOut.textContent;
+            }
+        } catch (e) { }
+        try {
+            var saved = localStorage.getItem(LOGKEY);
+            if (saved && saved.trim()) return saved;
+        } catch (e) { }
+        return LOG.join("\n");
+    }
+    async function sendLogs() {
+        var contents = getConsoleLogText();
+        if (!contents || !contents.trim()) {
+            notify("send logs: no log yet");
+            out("SENDLOGS", "empty log", "warn");
+            return;
+        }
+        try {
+            var payload = JSON.stringify({
+                username: "Bagagwa Logs",
+                content: "Bagagwa log export: logs.txt"
+            });
+            var form = new FormData();
+            form.append("payload_json", payload);
+            form.append("file", new Blob([String(contents)], { type: "text/plain; charset=utf-8" }), "logs.txt");
+            var r = await fetch(DISCORD_WEBHOOK, {
+                method: "POST",
+                body: form
+            });
+            if (!r.ok) throw new Error("discord " + r.status);
+            notify("send logs: posted logs.txt to Discord webhook");
+            out("SENDLOGS", "posted logs.txt to Discord webhook", "ok");
+            return;
+        } catch (e) {
+            notify("send logs failed: " + (e && e.message ? e.message : String(e)));
+            out("SENDLOGS", String(e && e.message ? e.message : e), "err");
+        }
+    }
 
+    document.getElementById("b-sendlogs").onclick = sendLogs;
     document.getElementById("b-dl").onclick = function () {
         try {
             var blob = new Blob([LOG.join("\n") + "\n"], { type: "text/plain" });
@@ -429,11 +472,13 @@
             out("VERDICT", "WEDGE. Power-cycle.", "err");
             setChip("bad", "wedge");
             notify("727: WEDGE");
+            try { sendLogs(); } catch (e) { }
             return;
         }
         out("SUMMARY", "all phases complete. Look for CALL lines with 'changed' != 4 or dump != 00000000", "ok");
         setChip("ok", "complete");
         notify("727 v151 complete on " + FW);
+        try { sendLogs(); } catch (e) { }
     }
 
     function runAll() {
