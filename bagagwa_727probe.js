@@ -321,8 +321,15 @@
         var sentinel = new Uint8Array(OUTLEN);
         for (var si = 0; si < OUTLEN; si++) sentinel[si] = 0xEE;
 
+        var idLo = id0 & 0xFFFFFFFFn;
+        var idHi = id0 >> 32n;
+        var idShift = (id0 >> 16n) & 0x7Fn;
         var shapes = [
-            { name: "id,1,out",        args: function (id) { return [id, 1n, outBuf, 0n, 0n, 0n]; } },
+            { name: "id64,1,out",      args: function (id) { return [id, 1n, outBuf, 0n, 0n, 0n]; } },
+            { name: "idLo,1,out",      args: function () { return [idLo, 1n, outBuf, 0n, 0n, 0n]; } },
+            { name: "idShift,1,out",   args: function () { return [idShift, 1n, outBuf, 0n, 0n, 0n]; } },
+            { name: "idHi,1,out",      args: function () { return [idHi, 1n, outBuf, 0n, 0n, 0n]; } },
+            { name: "id,1,out (dup)",  args: function (id) { return [id, 1n, outBuf, 0n, 0n, 0n]; } },
             { name: "id,out,1",        args: function (id) { return [id, outBuf, 1n, 0n, 0n, 0n]; } },
             { name: "out,id,1",        args: function (id) { return [outBuf, id, 1n, 0n, 0n, 0n]; } },
             { name: "0,id,1,out",      args: function (id) { return [0n, id, 1n, outBuf, 0n, 0n]; } },
