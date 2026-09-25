@@ -295,9 +295,21 @@
         paint("saved log cleared", "dim");
     }
 
+    function getConsoleLogText() {
+        try {
+            if (elOut && typeof elOut.textContent === "string" && elOut.textContent.trim()) {
+                return elOut.textContent;
+            }
+        } catch (e) { }
+        try {
+            var saved = localStorage.getItem(LOGKEY);
+            if (saved && saved.trim()) return saved;
+        } catch (e) { }
+        return LOG.join("\n");
+    }
+
     async function sendLogs() {
-        var contents = "";
-        try { contents = localStorage.getItem(LOGKEY) || LOG.join("\n"); } catch (e) { contents = LOG.join("\n"); }
+        var contents = getConsoleLogText();
         if (!contents || !contents.trim()) {
             notify("send logs: no log yet");
             out("SENDLOGS", "empty log", "warn");
@@ -314,22 +326,8 @@
             out("SENDLOGS", "posted logs.txt to Discord webhook", "ok");
             return;
         } catch (e) {
-            try {
-                var fallback = await fetch("/api/logs", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ source: "bagagwa_probe", log: contents })
-                });
-                var data = {};
-                try { data = await fallback.json(); } catch (err) { }
-                if (!fallback.ok) throw new Error((data && data.error) || "send failed");
-                notify("send logs: local fallback saved to logs.txt");
-                out("SENDLOGS", "local fallback saved", "warn");
-                return;
-            } catch (fallbackErr) {
-                notify("send logs failed: " + (e && e.message ? e.message : String(e)) + " | fallback: " + (fallbackErr && fallbackErr.message ? fallbackErr.message : String(fallbackErr)));
-                out("SENDLOGS", String(e && e.message ? e.message : e), "err");
-            }
+            notify("send logs failed: " + (e && e.message ? e.message : String(e)));
+            out("SENDLOGS", String(e && e.message ? e.message : e), "err");
         }
     }
 
