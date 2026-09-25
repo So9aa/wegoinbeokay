@@ -2096,9 +2096,9 @@ async function main() {
                 // early return below already skips. Nothing here can write kernel memory.
                 if (Q.get("sc") === "1") {
                     if (Q.get("probe727") === "1") {
-                        await loadScript("bagagwa_727probe.js?v=146");
+                        await loadScript("bagagwa_727probe.js?v=150");
                     } else {
-                        await loadScript("bagagwa_probe.js?v=146");
+                        await loadScript("bagagwa_probe.js?v=150");
                     }
                     /* Forward the operator's switches to the probe. ?arm=1 renders and runs
                      * the UNSAFE UAF tile (a failed armed run is a power cycle); ?scauto=1
