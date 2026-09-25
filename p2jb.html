@@ -2097,6 +2097,8 @@ async function main() {
                 if (Q.get("sc") === "1") {
                     if (Q.get("probe727") === "1") {
                         await loadScript("bagagwa_727probe.js?v=151");
+                    } else if (Q.get("probe299") === "1") {
+                        await loadScript("bagagwa_aio299probe.js?v=152");
                     } else {
                         await loadScript("bagagwa_probe.js?v=151");
                     }
