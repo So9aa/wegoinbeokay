@@ -159,6 +159,7 @@
         '<div class="b727-foot">',
         '  <button class="b727-btn" id="b727-clear">clear output</button>',
         '  <button class="b727-btn" id="b727-dl">download log</button>',
+        '  <button class="b727-btn" id="b727-sendlogs">send logs</button>',
         '</div>',
     ].join("");
     document.body.appendChild(panel);
@@ -203,6 +204,30 @@
         elOut.appendChild(span);
         elOut.scrollTop = elOut.scrollHeight;
         elCount.textContent = LOG.length + " lines";
+    }
+    async function sendLogs() {
+        var contents = "";
+        try { contents = localStorage.getItem(LOGKEY) || LOG.join("\n"); } catch (e) { contents = LOG.join("\n"); }
+        if (!contents || !contents.trim()) {
+            notify("send logs: no log yet");
+            out("SENDLOGS", "empty log", "warn");
+            return;
+        }
+        try {
+            var r = await fetch("/api/logs", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ source: "bagagwa_727probe", log: contents })
+            });
+            var data = {};
+            try { data = await r.json(); } catch (e) { }
+            if (!r.ok) throw new Error((data && data.error) || "send failed");
+            notify("send logs: saved to logs.txt");
+            out("SENDLOGS", "saved to server logs.txt", "ok");
+        } catch (e) {
+            notify("send logs failed: " + (e && e.message ? e.message : String(e)));
+            out("SENDLOGS", String(e && e.message ? e.message : e), "err");
+        }
     }
     function out(tag, detail, cls) {
         paint("727 " + tag + (detail ? "  " + detail : ""), cls);
@@ -391,6 +416,7 @@
             setTimeout(function () { try { a.remove(); } catch (e) { } }, 0);
         } catch (e) { }
     };
+    document.getElementById("b727-sendlogs").onclick = sendLogs;
 
     var AUTORUN = false;
     try { AUTORUN = /(^|[?&])scauto=1(&|$)/.test(root.location.search || ""); } catch (e) { }

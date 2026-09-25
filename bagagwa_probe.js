@@ -214,6 +214,7 @@
         '  <button class="bwp-btn" id="bwp-all">run all</button>',
         '  <button class="bwp-btn" id="bwp-clear">clear output</button>',
         '  <button class="bwp-btn" id="bwp-dl">download log</button>',
+        '  <button class="bwp-btn" id="bwp-sendlogs">send logs</button>',
         '  <button class="bwp-btn" id="bwp-clearsaved" style="display:none;">clear saved log</button>',
         '</div>',
     ].join("");
@@ -291,6 +292,31 @@
         var b = document.getElementById("bwp-clearsaved");
         if (b) b.style.display = "none";
         paint("saved log cleared", "dim");
+    }
+
+    async function sendLogs() {
+        var contents = "";
+        try { contents = localStorage.getItem(LOGKEY) || LOG.join("\n"); } catch (e) { contents = LOG.join("\n"); }
+        if (!contents || !contents.trim()) {
+            notify("send logs: no log yet");
+            out("SENDLOGS", "empty log", "warn");
+            return;
+        }
+        try {
+            var r = await fetch("/api/logs", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ source: "bagagwa_probe", log: contents })
+            });
+            var data = {};
+            try { data = await r.json(); } catch (e) { }
+            if (!r.ok) throw new Error((data && data.error) || "send failed");
+            notify("send logs: saved to logs.txt");
+            out("SENDLOGS", "saved to server logs.txt", "ok");
+        } catch (e) {
+            notify("send logs failed: " + (e && e.message ? e.message : String(e)));
+            out("SENDLOGS", String(e && e.message ? e.message : e), "err");
+        }
     }
 
     /* Everything a payload logs goes to this panel AND to the page's own log AND to the
@@ -1879,6 +1905,7 @@
     var clearSaved = document.getElementById("bwp-clearsaved");
     if (clearSaved) clearSaved.onclick = persistClear;
     document.getElementById("bwp-dl").onclick = download;
+    document.getElementById("bwp-sendlogs").onclick = sendLogs;
     document.getElementById("bwp-hide").onclick = function () {
         root.style.display = "none";
         mini.style.display = "block";
