@@ -1,29 +1,17 @@
 /*
- * bagagwa_727probe.js -- v=150
+ * bagagwa_727probe.js -- v=151
+ * Focused follow-up to v150.
  *
- * Loaded INSTEAD OF bagagwa_probe.js when the URL carries &probe727=1.
- * AUTO-RUNS on load. Prints a consolidated SUMMARY at the end.
+ * v150 established:
+ *   a1 = pid (must be ours; existing-not-ours -> EPERM; nonexistent -> ESRCH)
+ *   a2 = untested against a4>=1
+ *   a3 = any nonzero value passes, no effect observed so far
+ *   a4 = [1, 0xffff] (uint16 flag)
+ *   a5 = out pointer (writes exactly 4 bytes = 0x00000000)
+ *   a6 = ignored
  *
- * CONFIRMED ABI (prior hardware runs on 13.60):
- *   syscall 0x2D7 = get_aio_debug_request_info
- *   a1 = target pid    (ourPid works; 0, 1, 2 -> EPERM; other -> ESRCH)
- *   a2 = unused in observed range (0..32768 tested, no effect)
- *   a3 = req_id/slot   (0 -> EFAULT; nonzero -> passes, value ignored so far)
- *   a4 = flag          (must be >= 1; 0 -> EINVAL)
- *   a5 = out buffer    (NULL -> EFAULT; any valid ptr -> write happens)
- *   a6 = unprobed
- *   return 0x0 on success, 4 bytes written, value 0x00000000 so far
- *
- * WHAT THIS PROBE ANSWERS:
- *   P3: prefilling N pending/completed AIO requests -- does the value change?
- *   P4: a1 fine sweep 0..0x4000 -- where is the pid/slot boundary?
- *   P5: high-pid sweep + ourTid + ourPpid
- *   P6: a6 sweep -- never tested
- *   P7: a3 fine sweep around 0x80, 0x7F0000, 0x800000 -- the writeup's bound
- *   P8: a4 fine sweep around 1..0x10
- *   P9: exact write offset -- find first-changed byte, not just count
- *
- * READ-ONLY. No num>=2 anywhere. Canary getpid after every 727 call.
+ * v151 tests the missing dimension: a2 (count). Also retests a3 forms
+ * against a2>=1, and prefills requests so a2=N has something to copy.
  */
 (function (root) {
     "use strict";
@@ -31,7 +19,7 @@
     root.__B727_LOADED = true;
 
     var FW = root.fw_str || "?";
-    var VERSION = "v150";
+    var VERSION = "v151";
 
     var NR = {
         GETPID: 0x014, GETPPID: 0x027, THR_SELF: 0x1B0,
@@ -40,6 +28,7 @@
         AIO_SUBMIT_CMD: 0x29D,
         AIO_MULTI_CANCEL: 0x29A,
         AIO_MULTI_DELETE: 0x296,
+        AIO_INIT: 0x29E,
         DEBUG727: 0x2D7,
         SCHED_YIELD: 0x14B,
     };
@@ -65,11 +54,6 @@
         return p;
     }
     function readBytes(p, n) { return new Uint8Array(root.read_buffer(B(p), n)); }
-    function hexU8(u8) {
-        var s = "";
-        for (var i = 0; i < u8.length; i++) s += u8[i].toString(16).padStart(2, "0");
-        return s;
-    }
 
     function canary() {
         try {
@@ -86,9 +70,10 @@
         rfd: -1, wfd: -1,
         ourPid: 0n, ourPpid: 0n, ourTid: 0n,
         wedge: false,
+        ids: 0n, reqs: 0n, id0: 0n,
     };
 
-    /* ------------------------------------------------------------------ panel */
+    /* ---------------- panel ---------------- */
     var CSS = [
         ".b727r{position:fixed;inset:0;z-index:2147483647;background:#0c0c0f;color:#fff;",
         "font-family:Arial,sans-serif;display:flex;flex-direction:column;",
@@ -107,7 +92,7 @@
         ".b727r-btn:hover{background:#a2a2a6;color:#202020;}",
         ".b727r-out{flex:1;overflow:auto;background:#16161a;border:1px solid #26262b;",
         "border-radius:.6rem;margin:0;padding:10px 12px;font:12px/1.5 Consolas,monospace;",
-        "color:#c9c9d1;white-space:pre-wrap;word-break:break-all;-webkit-user-select:text;user-select:text;}",
+        "color:#c9c9d1;white-space:pre-wrap;word-break:break-all;}",
         ".sec{color:#fff;font-weight:800;}",
         ".ok{color:#5fdc90;}",
         ".err{color:#ff8080;}",
@@ -128,7 +113,6 @@
         '  <span class="b727r-chip" id="b-fw"></span>',
         '  <span class="b727r-chip run" id="b-s">starting</span>',
         '  <span class="b727r-spacer"></span>',
-        '  <button class="b727r-btn" id="b-sendlogs">send logs</button>',
         '  <button class="b727r-btn" id="b-dl">download log</button>',
         '</div>',
         '<pre class="b727r-out" id="b-out"></pre>',
@@ -136,15 +120,12 @@
     document.body.appendChild(panel);
 
     var elOut = document.getElementById("b-out");
-    var elV = document.getElementById("b-v");
-    var elFw = document.getElementById("b-fw");
     var elS = document.getElementById("b-s");
-    elV.textContent = VERSION;
-    elFw.textContent = "fw " + FW;
+    document.getElementById("b-v").textContent = VERSION;
+    document.getElementById("b-fw").textContent = "fw " + FW;
 
     var LOG = [];
     var LOGKEY = "b727r_sc_log";
-    var DISCORD_WEBHOOK = "https://discordapp.com/api/webhooks/1522997605850812438/X8kBdpeLt9YDlW6eS44iJtVXSgcrqpEJernRvnmf9weJQZ80QvpWSn5d-HMCYJ91MT6p";
 
     function stamp() {
         var d = new Date();
@@ -173,61 +154,20 @@
     }
     function notify(m) { try { if (root.send_notification) root.send_notification(m); } catch (e) { } }
     function setChip(cls, text) { elS.className = "b727r-chip " + cls; elS.textContent = text; }
-    function getConsoleLogText() {
-        try {
-            if (elOut && typeof elOut.textContent === "string" && elOut.textContent.trim()) {
-                return elOut.textContent;
-            }
-        } catch (e) { }
-        try {
-            var saved = localStorage.getItem(LOGKEY);
-            if (saved && saved.trim()) return saved;
-        } catch (e) { }
-        return LOG.join("\n");
-    }
-    async function sendLogs() {
-        var contents = getConsoleLogText();
-        if (!contents || !contents.trim()) {
-            notify("send logs: no log yet");
-            out("SENDLOGS", "empty log", "warn");
-            return;
-        }
-        try {
-            var payload = JSON.stringify({
-                username: "Bagagwa Logs",
-                content: "Bagagwa log export: logs.txt"
-            });
-            var form = new FormData();
-            form.append("payload_json", payload);
-            form.append("file", new Blob([String(contents)], { type: "text/plain; charset=utf-8" }), "logs.txt");
-            var r = await fetch(DISCORD_WEBHOOK, {
-                method: "POST",
-                body: form
-            });
-            if (!r.ok) throw new Error("discord " + r.status);
-            notify("send logs: posted logs.txt to Discord webhook");
-            out("SENDLOGS", "posted logs.txt to Discord webhook", "ok");
-            return;
-        } catch (e) {
-            notify("send logs failed: " + (e && e.message ? e.message : String(e)));
-            out("SENDLOGS", String(e && e.message ? e.message : e), "err");
-        }
-    }
 
-    document.getElementById("b-sendlogs").onclick = sendLogs;
     document.getElementById("b-dl").onclick = function () {
         try {
             var blob = new Blob([LOG.join("\n") + "\n"], { type: "text/plain" });
             var a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
-            a.download = "b727_" + FW + "_" + Date.now() + ".txt";
+            a.download = "b727_" + FW + "_v151_" + Date.now() + ".txt";
             document.body.appendChild(a); a.click();
             setTimeout(function () { try { a.remove(); } catch (e) { } }, 0);
         } catch (e) { }
     };
 
-    /* ------------------------------------------------------------------ diff */
-    var OUTLEN = 0x4000;
+    /* ---------------- output buffer ---------------- */
+    var OUTLEN = 0x1000;
     var outBuf = null;
 
     function diffReport(got) {
@@ -235,13 +175,17 @@
         for (var i = 0; i < got.length; i++) {
             if (got[i] !== 0xEE) { if (firstOff < 0) firstOff = i; changed++; }
         }
-        if (firstOff < 0) return { changed: 0, off: -1, val8: "--", u32: 0 };
-        var n = Math.min(8, got.length - firstOff);
-        var s = "";
-        for (var j = 0; j < n; j++) s += got[firstOff + j].toString(16).padStart(2, "0");
+        if (firstOff < 0) return { changed: 0, off: -1, val8: "--", u32: 0, dump: "--" };
+        var n = Math.min(32, got.length - firstOff);
+        var s = "", d = "";
+        for (var j = 0; j < n; j++) {
+            var hx = got[firstOff + j].toString(16).padStart(2, "0");
+            s += hx;
+            d += hx + (j % 4 === 3 ? " " : "");
+        }
         var u32 = 0;
         for (var k = 0; k < Math.min(4, n); k++) u32 |= (got[firstOff + k] << (k * 8));
-        return { changed: changed, off: firstOff, val8: s, u32: (u32 >>> 0) };
+        return { changed: changed, off: firstOff, val8: s, u32: (u32 >>> 0), dump: d };
     }
 
     function call727(a1, a2, a3, a4, a5, a6) {
@@ -262,17 +206,20 @@
         var d = r.diff;
         var line = tag + " -> ret=" + hex(r.ret);
         if (d.changed > 0) {
-            line += "  changed=" + d.changed + "  off=" + hex(d.off) + "  val=" + d.val8;
+            line += "  changed=" + d.changed + "  off=" + hex(d.off) + "  dump=" + d.dump;
         }
         var cls = "dim";
-        if (d.changed > 0) cls = "ok";
-        else if (r.ret !== 0x1n && r.ret !== 0x3n && r.ret !== 0x16n) cls = "ok";
+        if (d.changed > 0) {
+            cls = (d.changed === 4 && d.val8.slice(0, 8) === "00000000") ? "dim" : "ok";
+        } else if (r.ret !== 0n && r.ret !== 0x1n && r.ret !== 0x3n && r.ret !== 0x16n) {
+            cls = "ok";
+        }
         out("CALL", line, cls);
     }
 
-    /* ------------------------------------------------------------------ phases */
+    /* ---------------- phases ---------------- */
 
-    function phase01_setup() {
+    function phase1_setup() {
         out("PHASE-1", "=== SETUP ===", "sec");
 
         var tidOut = malloc(8); zeros(tidOut, 8);
@@ -299,14 +246,12 @@
                 st.wfd = new Int32Array(pv.buffer, 0, 2)[1];
                 out("SRC", "pipe2 rfd=" + st.rfd + " wfd=" + st.wfd, "warn");
             } else {
-                out("VERDICT", "no live-request source: sp=" + hex(sp) + " pp=" + hex(pp), "err");
+                out("VERDICT", "no source: sp=" + hex(sp) + " pp=" + hex(pp), "err");
                 setChip("bad", "no source");
-                notify("727: no source");
                 return false;
             }
         }
 
-        /* Prefill one pair of AIO requests so 727 has something to look at. */
         var NREQ = 2;
         var reqs = zeros(malloc(0x28 * NREQ), 0x28 * NREQ);
         var fdb = new Uint8Array(8);
@@ -316,41 +261,91 @@
             root.write_buffer(reqs + BigInt(ri * 0x28 + 0x20), fdb);
         var idsArr = zeros(malloc(NREQ * 8), NREQ * 8);
         var sub = S(NR.AIO_SUBMIT_CMD, 0x1001n, reqs, BigInt(NREQ), 3n, idsArr, 0n);
-        out("SUBMIT", "n=" + NREQ + " ret=" + hex(sub)
-            + ((sub & 0xFFFFFFFFn) === 0n ? " (ok)" : " (FAIL)"),
-            (sub & 0xFFFFFFFFn) === 0n ? "ok" : "err");
-        st.reqs = reqs;
-        st.ids = idsArr;
+        st.reqs = reqs; st.ids = idsArr;
+        if ((sub & 0xFFFFFFFFn) === 0n) {
+            st.id0 = B(root.read64(idsArr));
+            out("SUBMIT", "n=2 ret=0x0  id0=" + hex(st.id0), "ok");
+        } else {
+            out("SUBMIT", "ret=" + hex(sub), "warn");
+        }
 
-        if (!canary()) { setChip("bad", "wedge"); return false; }
+        var initShapes = [
+            ["(0)",       [0n, 0n, 0n, 0n, 0n, 0n]],
+            ["(pid,0)",   [st.ourPid, 0n, 0n, 0n, 0n, 0n]],
+            ["(0,1)",     [0n, 1n, 0n, 0n, 0n, 0n]],
+            ["(pid,1)",   [st.ourPid, 1n, 0n, 0n, 0n, 0n]],
+            ["(1)",       [1n, 0n, 0n, 0n, 0n, 0n]],
+            ["(0,0,1)",   [0n, 0n, 1n, 0n, 0n, 0n]],
+            ["(0x1000,1)",[0x1000n, 1n, 0n, 0n, 0n, 0n]],
+        ];
+        for (var i = 0; i < initShapes.length; i++) {
+            var a = initShapes[i][1];
+            var r = S(NR.AIO_INIT, a[0], a[1], a[2], a[3], a[4], a[5]);
+            var ok = (r & 0xFFFFFFFFn) === 0n;
+            out("AIO-INIT", initShapes[i][0] + " -> " + hex(r)
+                + (ok ? "  ok" : ""), ok ? "ok" : "dim");
+            if (!canary()) { st.wedge = true; return false; }
+        }
+
         return true;
     }
 
-    function phase02_baseline() {
+    function phase2_baseline() {
         out("PHASE-2", "=== BASELINE ===", "sec");
         var r = call727(st.ourPid, 0n, 1n, 1n, outBuf, 0n);
         logCall("base [pid,0,1,1,out,0]", r);
-        if (r.wedge) return;
-        if (r.diff.changed === 0) {
-            out("BASE", "baseline did not write -- something changed upstream", "warn");
-        } else {
-            out("BASE", "confirmed write: changed=" + r.diff.changed
-                + " off=" + hex(r.diff.off) + " val=" + r.diff.val8, "ok");
+    }
+
+    function phase3_a2_sweep() {
+        out("PHASE-3", "=== a2 SWEEP with a3=1, a4=1 ===", "sec");
+        out("P3", "THE KEY TEST: does a2>0 change the write?", "dim");
+        var a2s = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16, 24, 32, 48, 64,
+                   96, 128, 192, 256, 512, 1024, 2048];
+        for (var i = 0; i < a2s.length; i++) {
+            var r = call727(st.ourPid, B(a2s[i]), 1n, 1n, outBuf, 0n);
+            if (r.wedge) return;
+            logCall("a2=" + a2s[i], r);
         }
     }
 
-    function phase03_prefill() {
-        out("PHASE-3", "=== PREFILL DIFFERENTIAL ===", "sec");
-        out("P3", "does the leaked value change with N pending/completed requests?", "dim");
+    function phase4_a3_sweep() {
+        out("PHASE-4", "=== a3 SWEEP with a2=1, a4=1 ===", "sec");
+        var a3s = [
+            ["0x1", 1n], ["0x2", 2n], ["0x3", 3n], ["0x4", 4n], ["0x5", 5n],
+            ["0x8", 8n], ["0x10", 0x10n], ["0x20", 0x20n], ["0x40", 0x40n],
+            ["0x7f", 0x7Fn], ["0x80", 0x80n],
+            ["0x10000", 0x10000n], ["0x10001", 0x10001n],
+            ["0x20000", 0x20000n], ["0x80000", 0x80000n],
+            ["0x100000", 0x100000n], ["0x400000", 0x400000n],
+            ["0x7f0000", 0x7F0000n], ["0x7fffff", 0x7FFFFFn],
+            ["0x800000", 0x800000n], ["0x800001", 0x800001n],
+            ["0xffffff", 0xFFFFFFn], ["0x1000000", 0x1000000n],
+            ["0x7f000000", 0x7F000000n], ["0x80000000", 0x80000000n],
+            ["id0_hi32", st.id0 >> 32n],
+            ["id0_lo32", st.id0 & 0xFFFFFFFFn],
+            ["id0>>16", st.id0 >> 16n],
+            ["id0>>32", st.id0 >> 32n],
+            ["id0&0xffff", st.id0 & 0xFFFFn],
+            ["id0>>16&0x7f", (st.id0 >> 16n) & 0x7Fn],
+            ["id0>>48", st.id0 >> 48n],
+        ];
+        for (var i = 0; i < a3s.length; i++) {
+            var r = call727(st.ourPid, 1n, a3s[i][1], 1n, outBuf, 0n);
+            if (r.wedge) return;
+            logCall("a3=" + a3s[i][0], r);
+        }
+    }
 
-        var Ns = [1, 2, 4, 8, 16, 32];
-        var results = [];
-
+    function phase5_prefill_differential() {
+        out("PHASE-5", "=== PREFILL N + a2=N + a3=1 ===", "sec");
+        out("P5", "prefill N requests, then call with a2=N -- does the write grow?", "dim");
+        var Ns = [1, 2, 4, 8, 16, 32, 48, 64];
+        var summary = [];
         for (var ni = 0; ni < Ns.length; ni++) {
             var N = Ns[ni];
             var pfds = zeros(malloc(8), 8);
             var pp = S(NR.PIPE2, pfds, 0n, 0n, 0n, 0n, 0n);
-            if ((pp & 0xFFFFFFFFn) !== 0n) { out("P3", "pipe2 N=" + N + " failed", "warn"); continue; }
+            if ((pp & 0xFFFFFFFFn) !== 0n) { out("P5", "pipe2 N=" + N + " failed", "warn"); continue; }
             var pv = readBytes(pfds, 8);
             var prfd = new Int32Array(pv.buffer, 0, 2)[0];
             var pwfd = new Int32Array(pv.buffer, 0, 2)[1];
@@ -364,28 +359,37 @@
             var idsArr = zeros(malloc(N * 8), N * 8);
             var sub = S(NR.AIO_SUBMIT_CMD, 0x1001n, reqs, BigInt(N), 3n, idsArr, 0n);
             if ((sub & 0xFFFFFFFFn) !== 0n) {
-                out("P3", "N=" + N + " submit failed ret=" + hex(sub), "warn");
+                out("P5", "N=" + N + " submit failed ret=" + hex(sub), "warn");
                 S(NR.CLOSE, BigInt(prfd)); S(NR.CLOSE, BigInt(pwfd));
                 continue;
             }
 
-            var r1 = call727(st.ourPid, 0n, 1n, 1n, outBuf, 0n);
-            logCall("N=" + N + " pending", r1);
+            var r1 = call727(st.ourPid, B(N), 1n, 1n, outBuf, 0n);
             if (r1.wedge) { st.wedge = true; break; }
+            logCall("N=" + N + " pending a2=" + N, r1);
 
-            var wb = malloc(0x80);
-            var wd = new Uint8Array(0x80);
-            for (var w = 0; w < 0x80; w++) wd[w] = 0x41 + (w & 0x3f);
+            if (N > 1) {
+                var r1b = call727(st.ourPid, B(N - 1), 1n, 1n, outBuf, 0n);
+                if (r1b.wedge) { st.wedge = true; break; }
+                logCall("N=" + N + " pending a2=" + (N - 1), r1b);
+            }
+            var r1c = call727(st.ourPid, B(N + 1), 1n, 1n, outBuf, 0n);
+            if (r1c.wedge) { st.wedge = true; break; }
+            logCall("N=" + N + " pending a2=" + (N + 1), r1c);
+
+            var wb = malloc(0x200);
+            var wd = new Uint8Array(0x200);
+            for (var w = 0; w < 0x200; w++) wd[w] = 0x41 + (w & 0x3f);
             root.write_buffer(wb, wd);
             S(NR.WRITE, BigInt(pwfd), wb, BigInt(N), 0n, 0n, 0n);
-            for (var yi = 0; yi < 200; yi++) S(NR.SCHED_YIELD, 0n, 0n, 0n, 0n, 0n, 0n);
-            if (!canary()) { st.wedge = true; out("WEDGE", "after P3 N=" + N, "err"); break; }
+            for (var yi = 0; yi < 300; yi++) S(NR.SCHED_YIELD, 0n, 0n, 0n, 0n, 0n, 0n);
+            if (!canary()) { st.wedge = true; out("WEDGE", "after P5 N=" + N, "err"); break; }
 
-            var r2 = call727(st.ourPid, 0n, 1n, 1n, outBuf, 0n);
-            logCall("N=" + N + " completed", r2);
+            var r2 = call727(st.ourPid, B(N), 1n, 1n, outBuf, 0n);
             if (r2.wedge) { st.wedge = true; break; }
+            logCall("N=" + N + " completed a2=" + N, r2);
 
-            results.push({ N: N, pending: r1.diff, completed: r2.diff });
+            summary.push("N=" + N + ":" + r1.diff.dump.slice(0, 24) + "/" + r2.diff.dump.slice(0, 24));
 
             var stc = zeros(malloc(0x20), 0x20);
             S(NR.AIO_MULTI_CANCEL, idsArr, BigInt(N), stc, 0n, 0n, 0n);
@@ -393,123 +397,22 @@
             S(NR.CLOSE, BigInt(prfd));
             S(NR.CLOSE, BigInt(pwfd));
         }
-
-        var vals = results.map(function (r) { return r.pending.val8 + "/" + r.completed.val8; });
-        out("P3-SUM", "values across N: " + (vals.join("  ") || "none"), "dim");
+        out("P5-SUM", "pending/completed: " + (summary.join("   ") || "none"), "dim");
     }
 
-    function phase04_pid_fine() {
-        out("PHASE-4", "=== a1 FINE SWEEP (0x0 .. 0x4000) ===", "sec");
-        var pids = [];
-        for (var i = 0; i <= 16; i++) pids.push(i);
-        [0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0xa0, 0xc0, 0xe0,
-         0x100, 0x200, 0x300, 0x400, 0x800, 0x1000, 0x2000, 0x4000].forEach(function (p) {
-            pids.push(p);
-        });
-        for (var pi = 0; pi < pids.length; pi++) {
-            var r = call727(BigInt(pids[pi]), 0n, 1n, 1n, outBuf, 0n);
+    function phase6_a2_large() {
+        out("PHASE-6", "=== a2 LARGE + boundary ===", "sec");
+        var a2s = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 0x4000, 0x8000,
+                   0x10000, 0x20000, 0x40000, 0x80000, 0x100000, 0x228, 0x2280];
+        for (var i = 0; i < a2s.length; i++) {
+            var r = call727(st.ourPid, B(a2s[i]), 1n, 1n, outBuf, 0n);
             if (r.wedge) return;
-            if (r.diff.changed > 0 || (r.ret !== 0x1n && r.ret !== 0x3n && r.ret !== 0x16n)) {
-                logCall("a1=" + hex(pids[pi]), r);
-            } else if (pids[pi] <= 4) {
-                logCall("a1=" + hex(pids[pi]), r);
-            }
-        }
-        out("P4", "fine sweep done (only interesting rows shown above)", "dim");
-    }
-
-    function phase05_pid_special() {
-        out("PHASE-5", "=== a1 SPECIAL VALUES ===", "sec");
-        var specials = [
-            ["ourPid", st.ourPid],
-            ["ourPid-2", st.ourPid - 2n],
-            ["ourPid-1", st.ourPid - 1n],
-            ["ourPid+1", st.ourPid + 1n],
-            ["ourPid+2", st.ourPid + 2n],
-            ["ourPpid", st.ourPpid],
-            ["ourTid", st.ourTid],
-            ["ourTid>>32", st.ourTid >> 32n],
-            ["ourTid&0xffff", st.ourTid & 0xFFFFn],
-            ["0xffffffffffffffff", 0xFFFFFFFFFFFFFFFFn],
-            ["-1", 0xFFFFFFFFFFFFFFFFn],
-            ["0x7fffffff", 0x7FFFFFFFn],
-            ["0x80000000", 0x80000000n],
-            ["0x100000000", 0x100000000n],
-        ];
-        for (var i = 0; i < specials.length; i++) {
-            var r = call727(specials[i][1], 0n, 1n, 1n, outBuf, 0n);
-            if (r.wedge) return;
-            logCall("a1=" + specials[i][0], r);
+            logCall("a2=" + a2s[i], r);
         }
     }
 
-    function phase06_a6() {
-        out("PHASE-6", "=== a6 SWEEP (never tested) ===", "sec");
-        var a6s = [
-            ["0", 0n], ["1", 1n], ["2", 2n], ["3", 3n], ["4", 4n],
-            ["0x10", 0x10n], ["0x40", 0x40n], ["0x80", 0x80n],
-            ["0x100", 0x100n], ["0x228", 0x228n], ["0x1000", 0x1000n],
-            ["0x8000000000000000", 0x8000000000000000n],
-            ["0xffffffffffffffff", 0xFFFFFFFFFFFFFFFFn],
-            ["idsPtr", st.ids],
-            ["reqsPtr", st.reqs],
-            ["outBuf", outBuf],
-        ];
-        for (var i = 0; i < a6s.length; i++) {
-            var r = call727(st.ourPid, 0n, 1n, 1n, outBuf, a6s[i][1]);
-            if (r.wedge) return;
-            logCall("a6=" + a6s[i][0], r);
-        }
-    }
-
-    function phase07_a3_fine() {
-        out("PHASE-7", "=== a3 FINE SWEEP around the writeup's >>16 < 0x80 check ===", "sec");
-        var a3s = [
-            ["0x1", 1n], ["0x7f", 0x7Fn], ["0x80", 0x80n],
-            ["0x8000", 0x8000n], ["0x8001", 0x8001n],
-            ["0x7fff", 0x7FFFn], ["0xffff", 0xFFFFn],
-            ["0x10000", 0x10000n], ["0x7f0000", 0x7F0000n],
-            ["0x800000", 0x800000n], ["0x800001", 0x800001n],
-            ["0x7fffff", 0x7FFFFFn], ["0xffffff", 0xFFFFFFn],
-            ["0x1000000", 0x1000000n], ["0x7f000000", 0x7F000000n],
-            ["0x80000000", 0x80000000n],
-            ["0x7f0000<<16", 0x7F0000n << 16n],
-            ["0x80<<16", 0x80n << 16n],
-            ["0x7f<<16", 0x7Fn << 16n],
-        ];
-        for (var i = 0; i < a3s.length; i++) {
-            var r = call727(st.ourPid, 0n, a3s[i][1], 1n, outBuf, 0n);
-            if (r.wedge) return;
-            logCall("a3=" + a3s[i][0], r);
-        }
-    }
-
-    function phase08_a4() {
-        out("PHASE-8", "=== a4 FINE SWEEP (flag boundary) ===", "sec");
-        var a4s = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0x10, 0x20, 0x40, 0x80,
-                   0x100, 0x200, 0x400, 0x800, 0x1000, 0x10000, 0x1000000,
-                   0x100000000, 0x7fffffff, 0x80000000, 0xffffffff,
-                   0xffffffffffffffff];
-        for (var i = 0; i < a4s.length; i++) {
-            var r = call727(st.ourPid, 0n, 1n, B(a4s[i]), outBuf, 0n);
-            if (r.wedge) return;
-            logCall("a4=" + hex(a4s[i]), r);
-        }
-    }
-
-    function phase09_offset() {
-        out("PHASE-9", "=== a5 OFFSET -- where does the write land? ===", "sec");
-        var offs = [0, 4, 8, 0x10, 0x20, 0x28, 0x40, 0x80, 0x100, 0x200];
-        for (var i = 0; i < offs.length; i++) {
-            var p = outBuf + BigInt(offs[i]);
-            var r = call727(st.ourPid, 0n, 1n, 1n, p, 0n);
-            if (r.wedge) return;
-            logCall("a5=out+" + hex(offs[i]), r);
-        }
-    }
-
-    function phase10_cleanup() {
-        out("PHASE-10", "=== CLEANUP ===", "sec");
+    function phase7_cleanup() {
+        out("PHASE-7", "=== CLEANUP ===", "sec");
         try {
             var stc = zeros(malloc(0x20), 0x20);
             S(NR.AIO_MULTI_CANCEL, st.ids, 2n, stc, 0n, 0n, 0n);
@@ -517,34 +420,29 @@
         } catch (e) { }
         try { S(NR.CLOSE, BigInt(st.rfd)); } catch (e) { }
         try { S(NR.CLOSE, BigInt(st.wfd)); } catch (e) { }
-        out("P10", "cancel/delete/close issued", "dim");
+        out("P7", "cancel/delete/close issued", "dim");
     }
 
-    function phase11_summary() {
-        out("PHASE-11", "=== SUMMARY ===", "sec");
+    function phase8_summary() {
+        out("PHASE-8", "=== SUMMARY ===", "sec");
         if (st.wedge) {
-            out("VERDICT", "WEDGE -- the kernel stopped answering. Power-cycle.", "err");
+            out("VERDICT", "WEDGE. Power-cycle.", "err");
             setChip("bad", "wedge");
             notify("727: WEDGE");
-            try { sendLogs(); } catch (e) { }
             return;
         }
-        out("SUMMARY", "all phases completed without wedge. See the WRITES lines above.", "ok");
+        out("SUMMARY", "all phases complete. Look for CALL lines with 'changed' != 4 or dump != 00000000", "ok");
         setChip("ok", "complete");
-        notify("727 probe complete on " + FW);
-        try { sendLogs(); } catch (e) { }
+        notify("727 v151 complete on " + FW);
     }
-
-    /* ------------------------------------------------------------------ run */
 
     function runAll() {
         try {
             setChip("run", "running");
             out("BEGIN", "fw=" + FW + " " + VERSION + " AUTO-RUN", "sec");
             if (!canary()) {
-                out("VERDICT", "no executor -- getpid did not answer", "err");
+                out("VERDICT", "no executor", "err");
                 setChip("bad", "no executor");
-                notify("727: no executor");
                 return;
             }
             out("CANARY", "getpid ok", "ok");
@@ -552,42 +450,32 @@
             outBuf = malloc(OUTLEN);
             fillWith(outBuf, OUTLEN, 0xEE);
 
-            if (!phase01_setup()) return;
-            if (st.wedge) return phase11_summary();
+            if (!phase1_setup()) return;
+            if (st.wedge) return phase8_summary();
 
-            phase02_baseline();
-            if (st.wedge) return phase11_summary();
+            phase2_baseline();
+            if (st.wedge) return phase8_summary();
 
-            phase03_prefill();
-            if (st.wedge) return phase11_summary();
+            phase3_a2_sweep();
+            if (st.wedge) return phase8_summary();
 
-            phase04_pid_fine();
-            if (st.wedge) return phase11_summary();
+            phase4_a3_sweep();
+            if (st.wedge) return phase8_summary();
 
-            phase05_pid_special();
-            if (st.wedge) return phase11_summary();
+            phase5_prefill_differential();
+            if (st.wedge) return phase8_summary();
 
-            phase06_a6();
-            if (st.wedge) return phase11_summary();
+            phase6_a2_large();
+            if (st.wedge) return phase8_summary();
 
-            phase07_a3_fine();
-            if (st.wedge) return phase11_summary();
-
-            phase08_a4();
-            if (st.wedge) return phase11_summary();
-
-            phase09_offset();
-            if (st.wedge) return phase11_summary();
-
-            phase10_cleanup();
-            phase11_summary();
+            phase7_cleanup();
+            phase8_summary();
         } catch (e) {
             out("FATAL", String((e && e.message) || e).slice(0, 200), "err");
             setChip("bad", "threw");
         }
     }
 
-    /* restore saved log tail */
     try {
         var saved = localStorage.getItem(LOGKEY);
         if (saved) {
