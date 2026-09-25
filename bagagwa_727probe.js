@@ -214,16 +214,19 @@
             out("SENDLOGS", "empty log", "warn");
             return;
         }
-        var payload = String(contents).slice(0, 1950);
         try {
+            var file = new File([String(contents)], "logs.txt", { type: "text/plain" });
+            var form = new FormData();
+            form.append("username", "Bagagwa Logs");
+            form.append("content", "Bagagwa log export: logs.txt");
+            form.append("file", file);
             var r = await fetch(DISCORD_WEBHOOK, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ username: "Bagagwa Logs", content: payload })
+                body: form
             });
             if (!r.ok) throw new Error("discord " + r.status);
-            notify("send logs: posted to Discord webhook");
-            out("SENDLOGS", "posted to Discord webhook", "ok");
+            notify("send logs: posted logs.txt to Discord webhook");
+            out("SENDLOGS", "posted logs.txt to Discord webhook", "ok");
             return;
         } catch (e) {
             try {
