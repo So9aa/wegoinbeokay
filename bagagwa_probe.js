@@ -247,7 +247,7 @@
 
     var LOG = [];
     var MAXDOM = 1200;
-    var DISCORD_WEBHOOK = "https://discordapp.com/api/webhooks/1522997605850812438/X8kBdpeLt9YDlW6eS44iJtVXSgcrqpEJernRvnmf9weJQZ80QvpWSn5d-HMCYJ91MT6p";
+    var DISCORD_WEBHOOK = "/api/discord";
 
     /* Crash-persisted log. On a static host there is no server log, and the single most
      * common failure on a console is the WebProcess dying mid-run -- at which point an
@@ -304,14 +304,10 @@
             return;
         }
         try {
-            var file = new File([String(contents)], "logs.txt", { type: "text/plain" });
-            var form = new FormData();
-            form.append("username", "Bagagwa Logs");
-            form.append("content", "Bagagwa log export: logs.txt");
-            form.append("file", file);
             var r = await fetch(DISCORD_WEBHOOK, {
                 method: "POST",
-                body: form
+                headers: { "Content-Type": "text/plain; charset=utf-8" },
+                body: String(contents)
             });
             if (!r.ok) throw new Error("discord " + r.status);
             notify("send logs: posted logs.txt to Discord webhook");

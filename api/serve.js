@@ -22,12 +22,25 @@ const ROOT = process.cwd();
 const PORT = parseInt(process.argv[2] || "8080", 10);
 const ELFLDR_PORT = 9021;
 const LOGS_FILE = path.join(ROOT, "logs.txt");
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "https://discordapp.com/api/webhooks/1522997605850812438/X8kBdpeLt9YDlW6eS44iJtVXSgcrqpEJernRvnmf9weJQZ80QvpWSn5d-HMCYJ91MT6p";
 
 function appendServerLog(entry) {
     const line = `${new Date().toISOString()} ${entry}\n`;
     fs.appendFile(LOGS_FILE, line, (err) => {
         if (err) console.error("[logs] failed to write:", err.message);
     });
+}
+
+function buildDiscordMultipart(fileContent, fileName = "logs.txt", username = "Bagagwa Logs", content = "Bagagwa log export: logs.txt") {
+    const boundary = "----markimods-" + Date.now().toString(16);
+    const payload = [
+        `--${boundary}\r\nContent-Disposition: form-data; name="username"\r\n\r\n${username}\r\n`,
+        `--${boundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n${content}\r\n`,
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${fileContent}\r\n`,
+        `--${boundary}--\r\n`
+    ];
+    const body = Buffer.concat(payload.map((part) => Buffer.from(part, "utf8")));
+    return { body, contentType: `multipart/form-data; boundary=${boundary}` };
 }
 
 const MIME = {
@@ -103,6 +116,40 @@ http.createServer((req, res) => {
             });
             return;
         }
+    }
+
+    if (p === "/api/discord") {
+        if (req.method !== "POST") {
+            res.writeHead(405, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify({ ok: false, error: "method not allowed" }));
+        }
+        let chunks = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", async () => {
+            try {
+                const body = Buffer.concat(chunks);
+                const text = body.toString("utf8");
+                const fileContent = text || "";
+                const form = buildDiscordMultipart(fileContent, "logs.txt", "Bagagwa Logs", "Bagagwa log export: logs.txt");
+                const discordResp = await fetch(DISCORD_WEBHOOK_URL, {
+                    method: "POST",
+                    body: form.body,
+                    headers: { "Content-Type": form.contentType }
+                });
+                const status = discordResp.status;
+                if (!discordResp.ok) {
+                    const errText = await discordResp.text().catch(() => "");
+                    res.writeHead(502, { "Content-Type": "application/json" });
+                    return res.end(JSON.stringify({ ok: false, status, error: errText || "discord relay failed" }));
+                }
+                res.writeHead(200, { "Content-Type": "application/json" });
+                return res.end(JSON.stringify({ ok: true, via: "discord-relay", status }));
+            } catch (err) {
+                res.writeHead(500, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: false, error: err && err.message ? err.message : String(err) }));
+            }
+        });
+        return;
     }
 
     const m = p.match(/\/api\/payload\/([^/]+)$/);
