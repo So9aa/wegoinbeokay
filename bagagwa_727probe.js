@@ -342,112 +342,73 @@
         var idLow32 = id0 & 0xFFFFFFFFn;
         var idHigh32 = id0 >> 32n;
         var idLow16 = id0 & 0xFFFFn;
-        var idMasked80 = (id0 >> 16n) & 0x7Fn;
-        var idLow32Shift16 = (id0 & 0xFFFFFFFFn) >> 16n;
+
+        /* get our own tid / pid / ppid */
+        var tidOut = malloc(8); write64(tidOut, 0n);
+        S(0x1B0, tidOut, 0n, 0n, 0n, 0n, 0n);
+        var ourTid  = B(root.read64(tidOut));
+        var ourPid  = S(0x014, 0n, 0n, 0n, 0n, 0n, 0n);
+        var ourPpid = S(0x027, 0n, 0n, 0n, 0n, 0n, 0n);
+        out("IDS", "tid=" + hex(ourTid) + " pid=" + hex(ourPid)
+            + " ppid=" + hex(ourPpid) + " id0=" + hex(id0), "dim");
 
         var shapes = [];
 
-        /* === E: arg3 sweep -- the boundary test. Everything else 0.
-         *     Find the exact value of arg3 where the return flips from EFAULT
-         *     to EPERM, and what lies past that boundary. === */
-        [
-            ["0",          0n],
-            ["1",          1n],
-            ["2",          2n],
-            ["3",          3n],
-            ["4",          4n],
-            ["5",          5n],
-            ["6",          6n],
-            ["7",          7n],
-            ["8",          8n],
-            ["0x10",       0x10n],
-            ["0x20",       0x20n],
-            ["0x40",       0x40n],
-            ["0x7f",       0x7Fn],
-            ["0x80",       0x80n],
-            ["0x100",      0x100n],
-            ["0x1000",     0x1000n],
-            ["0x10000",    0x10000n],
-            ["0x100000",   0x100000n],
-            ["0x1000000",  0x1000000n],
-            ["0x10000000", 0x10000000n],
-            ["0x7f000000", 0x7F000000n],
-            ["0x80000000", 0x80000000n],
-            ["0x100000000", 0x100000000n],
-            ["low32",      idLow32],
-            ["high32",     idHigh32],
-            ["low16",      idLow16],
-            ["(low32>>16)", idLow32Shift16],
-            ["(id>>16)&0x7f", idMasked80],
-            ["idsPtr",     idsPtr],
-            ["reqsPtr",    reqsPtr],
-            ["idBuf",      idBuf],
-            ["idLoBuf",    idLoBuf],
-            ["outBuf",     outBuf],
-            ["id0",        id0]
-        ].forEach(function (e) {
-            shapes.push({ name: "E3=" + e[0],
-                args: function () { return [0n, 0n, e[1], 0n, 0n, 0n]; } });
+        /* === A: fine arg1 boundary (0x30 .. 0x1000) === */
+        [0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0,
+         0xf0, 0xf8, 0xfc, 0xfe, 0xff, 0x100, 0x101, 0x108, 0x110, 0x120, 0x140,
+         0x180, 0x1ff, 0x200, 0x220, 0x228, 0x229, 0x230, 0x240, 0x280, 0x300,
+         0x400, 0x800, 0x1000].forEach(function (x) {
+            shapes.push({ name: "A1b=0x" + x.toString(16),
+                args: function () { return [BigInt(x), 0n, id0, 1n, outBuf, 0n]; } });
         });
 
-        /* === A: arg1 sweep with arg3 = id0 (the EPERM baseline). === */
+        /* === B: arg1 = real IDs (own tid/pid/ppid, id transforms) === */
         [
-            ["0", 0n], ["1", 1n], ["2", 2n], ["3", 3n], ["4", 4n],
-            ["idsPtr", idsPtr], ["reqsPtr", reqsPtr], ["idBuf", idBuf],
-            ["outBuf", outBuf], ["0x28", 0x28n], ["0x100", 0x100n], ["0x228", 0x228n]
+            ["ourTid",          ourTid],
+            ["ourPid",          ourPid],
+            ["ourPpid",         ourPpid],
+            ["ourTid<<32",      ourTid << 32n],
+            ["ourPid<<32",      ourPid << 32n],
+            ["ourTid<<16",      ourTid << 16n],
+            ["ourPid<<16",      ourPid << 16n],
+            ["id0",             id0],
+            ["id0>>16",         id0 >> 16n],
+            ["id0>>32",         id0 >> 32n],
+            ["id0>>48",         id0 >> 48n],
+            ["id0&0xffffffff",  id0 & 0xFFFFFFFFn],
+            ["id0&0xffff",      id0 & 0xFFFFn],
+            ["id0<<16",         id0 << 16n],
+            ["id0|1",           id0 | 1n]
         ].forEach(function (e) {
-            shapes.push({ name: "A1=" + e[0],
-                args: function () { return [e[1], 0n, id0, 0n, 0n, 0n]; } });
+            shapes.push({ name: "B1=" + e[0],
+                args: function () { return [e[1], 0n, id0, 1n, outBuf, 0n]; } });
         });
 
-        /* === B: arg2 sweep with arg3 = id0. === */
-        [
-            ["0", 0n], ["1", 1n], ["2", 2n], ["4", 4n], ["8", 8n],
-            ["0x10", 0x10n], ["0x28", 0x28n], ["0x40", 0x40n],
-            ["0x100", 0x100n], ["0x228", 0x228n]
-        ].forEach(function (e) {
-            shapes.push({ name: "A2=" + e[0],
-                args: function () { return [0n, e[1], id0, 0n, 0n, 0n]; } });
+        /* === C: arg1=0x100 fixed, arg2 sweep === */
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 0x10, 0x28, 0x40, 0x80, 0x100, 0x228,
+         0x1000, 0x10000, 0x7f0000].forEach(function (y) {
+            shapes.push({ name: "C a2=" + y,
+                args: function () { return [0x100n, BigInt(y), id0, 1n, outBuf, 0n]; } });
         });
 
-        /* === C: arg4 sweep with arg3 = id0. === */
-        [
-            ["0", 0n], ["1", 1n], ["2", 2n], ["3", 3n], ["4", 4n],
-            ["0x10", 0x10n], ["0x40", 0x40n], ["0x80", 0x80n],
-            ["0x100", 0x100n], ["0x228", 0x228n]
-        ].forEach(function (e) {
-            shapes.push({ name: "A4=" + e[0],
-                args: function () { return [0n, 0n, id0, e[1], 0n, 0n]; } });
+        /* === D: arg1=0x100 fixed, arg3 sweep === */
+        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 0x10n, 0x28n, 0x100n, 0x228n,
+         id0, idLow32, idLow16, idHigh32].forEach(function (z) {
+            shapes.push({ name: "D a3=" + hex(z),
+                args: function () { return [0x100n, 0n, z, 1n, outBuf, 0n]; } });
         });
 
-        /* === D: arg5 sweep with arg3 = id0. === */
-        [
-            ["0", 0n], ["outBuf", outBuf], ["out+0x20", outBuf + 0x20n],
-            ["idsPtr", idsPtr], ["reqsPtr", reqsPtr], ["idBuf", idBuf],
-            ["idLoBuf", idLoBuf], ["outLenBuf", outLenBuf],
-            ["0x80", 0x80n], ["0x228", 0x228n]
-        ].forEach(function (e) {
-            shapes.push({ name: "A5=" + e[0],
-                args: function () { return [0n, 0n, id0, 0n, e[1], 0n]; } });
+        /* === E: arg1=0x100 fixed, arg4 sweep === */
+        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 0x10n, 0x40n, 0x80n, 0x100n,
+         0x228n].forEach(function (w) {
+            shapes.push({ name: "E a4=" + w,
+                args: function () { return [0x100n, 0n, id0, w, outBuf, 0n]; } });
         });
-
-        /* === G: with arg3 = id0, arg1 = idsPtr (the ids array) -- alternate arg2 and arg4. === */
-        for (var bi = 0; bi <= 8; bi++) {
-            shapes.push((function (y) {
-                return { name: "G1 b2=" + y,
-                    args: function () { return [idsPtr, BigInt(y), id0, 1n, outBuf, 0n]; } };
-            })(bi));
-        }
-        for (bi = 0; bi <= 8; bi++) {
-            shapes.push((function (y) {
-                return { name: "G2 b4=" + y,
-                    args: function () { return [0n, 0n, id0, BigInt(y), outBuf, 0n]; } };
-            })(bi));
-        }
 
         var counts = [1n];
         var liveIds = [id0];
-        out("SWEEP", liveIds.length + " id(s), " + shapes.length + " shapes, id0=" + hex(id0), "dim");
+        out("SWEEP", liveIds.length + " id(s), " + shapes.length + " shapes", "dim");
 
         var hits = 0;
         var wedged = false;
@@ -468,7 +429,7 @@
             if (ret3 !== 0xen) NON_EFAULT.push(sh3.name + "=" + hex(ret3));
             out("CALL", sh3.name + " -> " + hex(ret3)
                 + (changed3 ? "  BUF-CHANGED: " + hexBytes(got3).slice(0, 40) : ""),
-                (changed3 || (ret3 !== 0xen && ret3 !== 0x1n)) ? "ok" : "dim");
+                (changed3 || (ret3 !== 0xen && ret3 !== 0x1n && ret3 !== 0x3n)) ? "ok" : "dim");
         }
 
         if (NON_EFAULT.length) {
