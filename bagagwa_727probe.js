@@ -343,67 +343,78 @@
         var idHigh32 = id0 >> 32n;
         var idLow16 = id0 & 0xFFFFn;
 
-        /* get our own tid / pid / ppid */
         var tidOut = malloc(8); write64(tidOut, 0n);
         S(0x1B0, tidOut, 0n, 0n, 0n, 0n, 0n);
         var ourTid  = B(root.read64(tidOut));
         var ourPid  = S(0x014, 0n, 0n, 0n, 0n, 0n, 0n);
         var ourPpid = S(0x027, 0n, 0n, 0n, 0n, 0n, 0n);
+        var pid1    = 0n;
+        var pid0    = 0n;
         out("IDS", "tid=" + hex(ourTid) + " pid=" + hex(ourPid)
             + " ppid=" + hex(ourPpid) + " id0=" + hex(id0), "dim");
 
+        /* LARGE out buffer so a full-table copyout is visible. */
+        var BIGOUT = 0x400;
+        var bigOut = malloc(BIGOUT);
+        var bigSent = new Uint8Array(BIGOUT);
+        for (var bi2 = 0; bi2 < BIGOUT; bi2++) bigSent[bi2] = 0xEE;
+
         var shapes = [];
 
-        /* === A: fine arg1 boundary (0x30 .. 0x1000) === */
-        [0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0,
-         0xf0, 0xf8, 0xfc, 0xfe, 0xff, 0x100, 0x101, 0x108, 0x110, 0x120, 0x140,
-         0x180, 0x1ff, 0x200, 0x220, 0x228, 0x229, 0x230, 0x240, 0x280, 0x300,
-         0x400, 0x800, 0x1000].forEach(function (x) {
-            shapes.push({ name: "A1b=0x" + x.toString(16),
-                args: function () { return [BigInt(x), 0n, id0, 1n, outBuf, 0n]; } });
-        });
-
-        /* === B: arg1 = real IDs (own tid/pid/ppid, id transforms) === */
+        /* === Section 0: pid pivot. All other args held to the shape that just
+         *     wrote. arg1 sweep: ourPid, kernel pid (0), init (1), ourPpid,
+         *     small offsets around our pid. === */
         [
-            ["ourTid",          ourTid],
-            ["ourPid",          ourPid],
-            ["ourPpid",         ourPpid],
-            ["ourTid<<32",      ourTid << 32n],
-            ["ourPid<<32",      ourPid << 32n],
-            ["ourTid<<16",      ourTid << 16n],
-            ["ourPid<<16",      ourPid << 16n],
-            ["id0",             id0],
-            ["id0>>16",         id0 >> 16n],
-            ["id0>>32",         id0 >> 32n],
-            ["id0>>48",         id0 >> 48n],
-            ["id0&0xffffffff",  id0 & 0xFFFFFFFFn],
-            ["id0&0xffff",      id0 & 0xFFFFn],
-            ["id0<<16",         id0 << 16n],
-            ["id0|1",           id0 | 1n]
+            ["ourPid",   ourPid],
+            ["ourPid+1", ourPid + 1n],
+            ["ourPid-1", ourPid - 1n],
+            ["ourPid<<1", ourPid << 1n],
+            ["ourPid>>1", ourPid >> 1n],
+            ["ourPpid",  ourPpid],
+            ["0",        0n],
+            ["1",        1n],
+            ["2",        2n]
         ].forEach(function (e) {
-            shapes.push({ name: "B1=" + e[0],
-                args: function () { return [e[1], 0n, id0, 1n, outBuf, 0n]; } });
+            shapes.push({ name: "P1=" + e[0],
+                args: function () { return [e[1], 0n, id0, 0n, bigOut, 0n]; } });
         });
 
-        /* === C: arg1=0x100 fixed, arg2 sweep === */
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 0x10, 0x28, 0x40, 0x80, 0x100, 0x228,
-         0x1000, 0x10000, 0x7f0000].forEach(function (y) {
-            shapes.push({ name: "C a2=" + y,
-                args: function () { return [0x100n, BigInt(y), id0, 1n, outBuf, 0n]; } });
+        /* === Section A: arg2 sweep with arg1 = ourPid (the confirmed-good pid).
+         *     If arg2 is a count, some values may copy more bytes. === */
+        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 0x10n, 0x20n, 0x28n, 0x40n, 0x80n,
+         0x100n, 0x200n, 0x228n, 0x229n, 0x400n, 0x800n].forEach(function (y) {
+            shapes.push({ name: "A2=" + y,
+                args: function () { return [ourPid, y, id0, 0n, bigOut, 0n]; } });
         });
 
-        /* === D: arg1=0x100 fixed, arg3 sweep === */
-        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 0x10n, 0x28n, 0x100n, 0x228n,
-         id0, idLow32, idLow16, idHigh32].forEach(function (z) {
-            shapes.push({ name: "D a3=" + hex(z),
-                args: function () { return [0x100n, 0n, z, 1n, outBuf, 0n]; } });
+        /* === Section B: arg3 sweep with arg1 = ourPid, arg2 = 1.
+         *     arg3 is the primary candidate for req_id / slot. === */
+        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 0x10n, 0x28n, 0x40n, 0x80n,
+         0x100n, 0x228n, 0x400n, 0x1000n, 0x10000n, 0x100000n, 0x1000000n,
+         0x10000000n, id0, idLow32, idHigh32, idLow16].forEach(function (z) {
+            shapes.push({ name: "A3=" + hex(z),
+                args: function () { return [ourPid, 1n, z, 0n, bigOut, 0n]; } });
         });
 
-        /* === E: arg1=0x100 fixed, arg4 sweep === */
-        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 0x10n, 0x40n, 0x80n, 0x100n,
-         0x228n].forEach(function (w) {
-            shapes.push({ name: "E a4=" + w,
-                args: function () { return [0x100n, 0n, id0, w, outBuf, 0n]; } });
+        /* === Section C: arg4 sweep with arg1 = ourPid, arg2 = 1, arg3 = id0. === */
+        [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 0x10n, 0x28n, 0x40n, 0x80n,
+         0x100n, 0x228n, 0x400n].forEach(function (w) {
+            shapes.push({ name: "A4=" + w,
+                args: function () { return [ourPid, 1n, id0, w, bigOut, 0n]; } });
+        });
+
+        /* === Section D: combinations after the pid pivot. === */
+        [
+            ["P,A2=1,A3=1,A4=0",   [ourPid, 1n, 1n, 0n, bigOut, 0n]],
+            ["P,A2=1,A3=2,A4=0",   [ourPid, 1n, 2n, 0n, bigOut, 0n]],
+            ["P,A2=1,A3=0,A4=0",   [ourPid, 1n, 0n, 0n, bigOut, 0n]],
+            ["P,A2=0x228,A3=0,A4=0", [ourPid, 0x228n, 0n, 0n, bigOut, 0n]],
+            ["P,A2=1,A3=id0,A4=0", [ourPid, 1n, id0, 0n, bigOut, 0n]],
+            ["P,A2=1,A3=id0,A4=1", [ourPid, 1n, id0, 1n, bigOut, 0n]],
+            ["P,A2=1,A3=idLo32,A4=1", [ourPid, 1n, idLow32, 1n, bigOut, 0n]],
+            ["P,A2=1,A3=idLo16,A4=1", [ourPid, 1n, idLow16, 1n, bigOut, 0n]]
+        ].forEach(function (e) {
+            shapes.push({ name: "D " + e[0], args: function () { return e[1]; } });
         });
 
         var counts = [1n];
@@ -413,25 +424,42 @@
         var hits = 0;
         var wedged = false;
         var NON_EFAULT = [];
+        var WRITES = [];
+
+        function dumpBuf(u8, n) {
+            var s = "";
+            var nn = n > 64 ? 64 : n;
+            for (var i = 0; i < nn; i++) s += u8[i].toString(16).padStart(2, "0");
+            return s + (n > 64 ? "..." : "");
+        }
 
         for (var si3 = 0; si3 < shapes.length && !wedged; si3++) {
             var sh3 = shapes[si3];
-            fill(outBuf, OUTLEN, 0xEE);
+            root.write_buffer(B(bigOut), bigSent);
             var a3 = sh3.args();
             var ret3 = S(SYS_AIO_DEBUG_INFO, a3[0], a3[1], a3[2], a3[3], a3[4], a3[5]);
             if (!canary()) {
                 out("WEDGE", "shape=" + sh3.name + " -> " + hex(ret3), "err");
                 wedged = true; break;
             }
-            var got3 = readBytes(outBuf, OUTLEN);
-            var changed3 = !bytesEqual(got3, sentinel);
+            var got3 = readBytes(bigOut, BIGOUT);
+            var changed3 = !bytesEqual(got3, bigSent);
             if (changed3) hits++;
+            var diffBytes = 0;
+            for (var di = 0; di < BIGOUT; di++) if (got3[di] !== 0xEE) diffBytes++;
+            if (changed3) WRITES.push(sh3.name + "->ret=" + hex(ret3) + " bytes=" + diffBytes
+                + " " + dumpBuf(got3, diffBytes < 64 ? diffBytes : 64));
             if (ret3 !== 0xen) NON_EFAULT.push(sh3.name + "=" + hex(ret3));
             out("CALL", sh3.name + " -> " + hex(ret3)
-                + (changed3 ? "  BUF-CHANGED: " + hexBytes(got3).slice(0, 40) : ""),
+                + (changed3 ? "  BYTES=" + diffBytes + "  " + dumpBuf(got3, Math.min(diffBytes, 32)) : ""),
                 (changed3 || (ret3 !== 0xen && ret3 !== 0x1n && ret3 !== 0x3n)) ? "ok" : "dim");
         }
 
+        if (WRITES.length) {
+            out("WRITES", WRITES.join("  ||  "), "ok");
+        } else {
+            out("WRITES", "no writes across the sweep", "dim");
+        }
         if (NON_EFAULT.length) {
             out("NON-EFAULT", NON_EFAULT.join("  "), "ok");
         } else {
