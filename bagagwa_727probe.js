@@ -89,6 +89,16 @@
         for (var i = 0; i < u8.length; i++) s += u8[i].toString(16).padStart(2, "0");
         return s;
     }
+    function write64(ptr, value) {
+        if (root.write64) {
+            root.write64(B(ptr), B(value));
+            return;
+        }
+        var b = new Uint8Array(8);
+        var v = B(value);
+        for (var i = 0; i < 8; i++) b[i] = Number((v >> BigInt(8 * i)) & 0xffn);
+        root.write_buffer(B(ptr), b);
+    }
     function canary() {
         try {
             var r = B(root.syscall(SYS_GETPID));
@@ -318,25 +328,67 @@
 
         var OUTLEN = 0x40;
         var outBuf = malloc(OUTLEN);
+        var outLenBuf = zeros(malloc(4), 4);
+        var idBuf = malloc(8);
+        var idLoBuf = malloc(8);
         var sentinel = new Uint8Array(OUTLEN);
         for (var si = 0; si < OUTLEN; si++) sentinel[si] = 0xEE;
 
-        var idLo = id0 & 0xFFFFFFFFn;
-        var idHi = id0 >> 32n;
-        var idShift = (id0 >> 16n) & 0x7Fn;
+        /* ids array from submit -- arg1 candidates */
+        var idsPtr = ids;
+
+        /* id transforms, computed once */
+        write64(idBuf, id0);
+        write64(idLoBuf, id0 & 0xFFFFFFFFn);
+        var idLow32 = id0 & 0xFFFFFFFFn;
+        var idLow16 = id0 & 0xFFFFn;
+        var idHi32  = id0 >> 32n;
+        var idShift16 = (id0 & 0xFFFFFFFFn) >> 16n;
+        var idShift16Lo7 = idShift16 & 0x7Fn;
+
         var shapes = [
-            { name: "id64,1,out",      args: function (id) { return [id, 1n, outBuf, 0n, 0n, 0n]; } },
-            { name: "idLo,1,out",      args: function () { return [idLo, 1n, outBuf, 0n, 0n, 0n]; } },
-            { name: "idShift,1,out",   args: function () { return [idShift, 1n, outBuf, 0n, 0n, 0n]; } },
-            { name: "idHi,1,out",      args: function () { return [idHi, 1n, outBuf, 0n, 0n, 0n]; } },
-            { name: "id,1,out (dup)",  args: function (id) { return [id, 1n, outBuf, 0n, 0n, 0n]; } },
-            { name: "id,out,1",        args: function (id) { return [id, outBuf, 1n, 0n, 0n, 0n]; } },
-            { name: "out,id,1",        args: function (id) { return [outBuf, id, 1n, 0n, 0n, 0n]; } },
-            { name: "0,id,1,out",      args: function (id) { return [0n, id, 1n, outBuf, 0n, 0n]; } },
-            { name: "0,0,id,1,out",    args: function (id) { return [0n, 0n, id, 1n, outBuf, 0n]; } },
-            { name: "id,1,0,out",      args: function (id) { return [id, 1n, 0n, outBuf, 0n, 0n]; } },
+            /* --- reference: the shape we already ran, kept for comparability --- */
+            { name: "id,1,out",            args: function () { return [id0, 1n, outBuf, 0n, 0n, 0n]; } },
+
+            /* --- id value transforms, arg1 = id --- */
+            { name: "idLow32,1,out",       args: function () { return [idLow32, 1n, outBuf, 0n, 0n, 0n]; } },
+            { name: "idLow16,1,out",       args: function () { return [idLow16, 1n, outBuf, 0n, 0n, 0n]; } },
+            { name: "idHi32,1,out",        args: function () { return [idHi32, 1n, outBuf, 0n, 0n, 0n]; } },
+            { name: "idShift16,1,out",     args: function () { return [idShift16, 1n, outBuf, 0n, 0n, 0n]; } },
+            { name: "idShift16Lo7,1,out",  args: function () { return [idShift16Lo7, 1n, outBuf, 0n, 0n, 0n]; } },
+
+            /* --- the actual ids array from submit as arg1 --- */
+            { name: "idsPtr,1,out",        args: function () { return [idsPtr, 1n, outBuf, 0n, 0n, 0n]; } },
+            { name: "idsPtr,2,out",        args: function () { return [idsPtr, 2n, outBuf, 0n, 0n, 0n]; } },
+            { name: "idsPtr,2,out,outLen", args: function () { return [idsPtr, 2n, outBuf, outLenBuf, 0n, 0n]; } },
+
+            /* --- the EPERM shape (arg1=0), and variants with arg1 nonzero --- */
+            { name: "0,0,id,1,out",        args: function () { return [0n, 0n, id0, 1n, outBuf, 0n]; } },
+            { name: "0,0,idLow32,1,out",   args: function () { return [0n, 0n, idLow32, 1n, outBuf, 0n]; } },
+            { name: "1,0,id,1,out",        args: function () { return [1n, 0n, id0, 1n, outBuf, 0n]; } },
+            { name: "2,0,id,1,out",        args: function () { return [2n, 0n, id0, 1n, outBuf, 0n]; } },
+            { name: "0,1,id,1,out",        args: function () { return [0n, 1n, id0, 1n, outBuf, 0n]; } },
+            { name: "1,1,id,1,out",        args: function () { return [1n, 1n, id0, 1n, outBuf, 0n]; } },
+            { name: "0,0,idsPtr,2,out",    args: function () { return [0n, 0n, idsPtr, 2n, outBuf, 0n]; } },
+
+            /* --- with an out-length pointer --- */
+            { name: "id,1,out,outLen",     args: function () { return [id0, 1n, outBuf, outLenBuf, 0n, 0n]; } },
+            { name: "id,4,out,outLen",     args: function () { return [id0, 4n, outBuf, outLenBuf, 0n, 0n]; } },
+            { name: "idLow32,1,out,outLen",args: function () { return [idLow32, 1n, outBuf, outLenBuf, 0n, 0n]; } },
+            { name: "0,0,id,1,out,outLen", args: function () { return [0n, 0n, id0, 1n, outBuf, outLenBuf]; } },
+
+            /* --- pointer-to-id --- */
+            { name: "idPtr,1,out",         args: function () { return [idBuf, 1n, outBuf, 0n, 0n, 0n]; } },
+            { name: "idPtr,1,out,outLen",  args: function () { return [idBuf, 1n, outBuf, outLenBuf, 0n, 0n]; } },
+            { name: "idLoPtr,1,out",       args: function () { return [idLoBuf, 1n, outBuf, 0n, 0n, 0n]; } },
+
+            /* --- the classic get shape --- */
+            { name: "id,out,outLen",       args: function () { return [id0, outBuf, outLenBuf, 0n, 0n, 0n]; } },
+            { name: "0,0,id,out,outLen",   args: function () { return [0n, 0n, id0, outBuf, outLenBuf, 0n]; } },
         ];
         var counts = [1n, 2n, 4n, 8n, 16n, 0x228n];
+        out("SHAPES", shapes.length + " shapes; idLow32=" + hex(idLow32)
+            + " idShift16Lo7=" + hex(idShift16Lo7), "dim");
 
         var liveIds = [id0];
         if (id1 !== 0n && id1 !== id0) liveIds.push(id1);
@@ -371,6 +423,11 @@
             var sh = shapes[si2];
             for (var lj = 0; lj < liveIds.length && !wedged; lj++) {
                 fill(outBuf, OUTLEN, 0xEE);
+                /* reset the out-length cell to a sane value before every call so we can
+                 * tell whether the kernel wrote back a real length */
+                var olb = readBytes(outLenBuf, 4);
+                olb[0] = 0x40; olb[1] = 0; olb[2] = 0; olb[3] = 0;
+                root.write_buffer(B(outLenBuf), olb);
                 var a2 = sh.args(liveIds[lj]);
                 var ret2 = S(SYS_AIO_DEBUG_INFO, a2[0], a2[1], a2[2], a2[3], a2[4], a2[5]);
                 if (!canary()) {
@@ -380,10 +437,14 @@
                 var got2 = readBytes(outBuf, OUTLEN);
                 var changed2 = !bytesEqual(got2, sentinel);
                 if (changed2) hits++;
+                var lenAfter = readBytes(outLenBuf, 4);
+                var lenWord = lenAfter[0] | (lenAfter[1] << 8) | (lenAfter[2] << 16) | (lenAfter[3] << 24);
+                var lenChanged = lenWord !== 0x40;
                 out("CALL", sh.name + " id=" + hex(liveIds[lj])
                     + " -> " + hex(ret2)
+                    + (lenChanged ? "  outLen=" + lenWord : "")
                     + (changed2 ? "  BUFFER-CHANGED: " + hexBytes(got2).slice(0, 64) : ""),
-                    changed2 ? "ok" : "dim");
+                    (changed2 || lenChanged || (ret2 !== 0x0en && ret2 !== 0x1n)) ? "ok" : "dim");
             }
         }
 
