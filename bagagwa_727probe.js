@@ -347,84 +347,103 @@
 
         var shapes = [];
 
-        /* A: arg3 alternates, all other args at the EPERM baseline
-         *    (arg1=arg2=0, arg4=1, arg5=out). Question: which value of arg3
-         *    reaches EPERM, and which stays at EFAULT? */
+        /* === E: arg3 sweep -- the boundary test. Everything else 0.
+         *     Find the exact value of arg3 where the return flips from EFAULT
+         *     to EPERM, and what lies past that boundary. === */
         [
-            ["id_full",        id0],
-            ["low32",          idLow32],
-            ["low16",          idLow16],
-            ["high32",         idHigh32],
-            ["id>>16",         id0 >> 16n],
-            ["(low32>>16)",    idLow32Shift16],
-            ["(id>>16)&0x7f",  idMasked80],
-            ["id&0x7f",        id0 & 0x7Fn],
-            ["id_lo16_clear",  id0 & 0xFFFFFFFFFFFF0000n],
-            ["id^1",           id0 ^ 1n],
-            ["idsPtr",         idsPtr],
-            ["reqsPtr",        reqsPtr],
-            ["reqs+0x28",      reqsPtr + 0x28n],
-            ["idBuf",          idBuf],
-            ["idLoBuf",        idLoBuf],
-            ["outBuf",         outBuf],
-            ["0x10000",        0x10000n],
-            ["0x7f0000",       0x7F0000n],
-            ["0x800000",       0x800000n],
-            ["0x7f",           0x7Fn],
-            ["0x80",           0x80n],
-            ["0x100000000",    0x100000000n]
+            ["0",          0n],
+            ["1",          1n],
+            ["2",          2n],
+            ["3",          3n],
+            ["4",          4n],
+            ["5",          5n],
+            ["6",          6n],
+            ["7",          7n],
+            ["8",          8n],
+            ["0x10",       0x10n],
+            ["0x20",       0x20n],
+            ["0x40",       0x40n],
+            ["0x7f",       0x7Fn],
+            ["0x80",       0x80n],
+            ["0x100",      0x100n],
+            ["0x1000",     0x1000n],
+            ["0x10000",    0x10000n],
+            ["0x100000",   0x100000n],
+            ["0x1000000",  0x1000000n],
+            ["0x10000000", 0x10000000n],
+            ["0x7f000000", 0x7F000000n],
+            ["0x80000000", 0x80000000n],
+            ["0x100000000", 0x100000000n],
+            ["low32",      idLow32],
+            ["high32",     idHigh32],
+            ["low16",      idLow16],
+            ["(low32>>16)", idLow32Shift16],
+            ["(id>>16)&0x7f", idMasked80],
+            ["idsPtr",     idsPtr],
+            ["reqsPtr",    reqsPtr],
+            ["idBuf",      idBuf],
+            ["idLoBuf",    idLoBuf],
+            ["outBuf",     outBuf],
+            ["id0",        id0]
         ].forEach(function (e) {
-            shapes.push({ name: "A3=" + e[0],
-                args: function () { return [0n, 0n, e[1], 1n, outBuf, 0n]; } });
+            shapes.push({ name: "E3=" + e[0],
+                args: function () { return [0n, 0n, e[1], 0n, 0n, 0n]; } });
         });
 
-        /* B: arg4 sweep with arg3=id, arg5=out. */
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x228].forEach(function (x) {
-            shapes.push({ name: "A4=" + x,
-                args: function () { return [0n, 0n, id0, BigInt(x), outBuf, 0n]; } });
-        });
-
-        /* C: arg5 alternates with arg3=id, arg4=1. */
+        /* === A: arg1 sweep with arg3 = id0 (the EPERM baseline). === */
         [
-            ["0",         0n],
-            ["out",       outBuf],
-            ["out+8",     outBuf + 8n],
-            ["out+0x20",  outBuf + 0x20n],
-            ["idsPtr",    idsPtr],
-            ["reqsPtr",   reqsPtr],
-            ["idBuf",     idBuf],
-            ["idLoBuf",   idLoBuf],
-            ["outLenBuf", outLenBuf]
-        ].forEach(function (e) {
-            shapes.push({ name: "A5=" + e[0],
-                args: function () { return [0n, 0n, id0, 1n, e[1], 0n]; } });
-        });
-
-        /* D: arg1 alternates with arg3=id, arg4=1, arg5=out. */
-        [
-            ["0",         0n],
-            ["1",         1n],
-            ["idsPtr",    idsPtr],
-            ["reqsPtr",   reqsPtr],
-            ["idBuf",     idBuf],
-            ["outBuf",    outBuf],
-            ["outLenBuf", outLenBuf],
-            ["0x28",      0x28n],
-            ["0x100",     0x100n],
-            ["0x228",     0x228n]
+            ["0", 0n], ["1", 1n], ["2", 2n], ["3", 3n], ["4", 4n],
+            ["idsPtr", idsPtr], ["reqsPtr", reqsPtr], ["idBuf", idBuf],
+            ["outBuf", outBuf], ["0x28", 0x28n], ["0x100", 0x100n], ["0x228", 0x228n]
         ].forEach(function (e) {
             shapes.push({ name: "A1=" + e[0],
-                args: function () { return [e[1], 0n, id0, 1n, outBuf, 0n]; } });
+                args: function () { return [e[1], 0n, id0, 0n, 0n, 0n]; } });
         });
 
-        /* E: arg2 alternates. */
+        /* === B: arg2 sweep with arg3 = id0. === */
         [
-            ["0",     0n],   ["1",    1n],   ["2",    2n],   ["4",    4n],
-            ["0x28",  0x28n], ["0x40", 0x40n], ["0x100", 0x100n], ["0x228", 0x228n]
+            ["0", 0n], ["1", 1n], ["2", 2n], ["4", 4n], ["8", 8n],
+            ["0x10", 0x10n], ["0x28", 0x28n], ["0x40", 0x40n],
+            ["0x100", 0x100n], ["0x228", 0x228n]
         ].forEach(function (e) {
             shapes.push({ name: "A2=" + e[0],
-                args: function () { return [0n, e[1], id0, 1n, outBuf, 0n]; } });
+                args: function () { return [0n, e[1], id0, 0n, 0n, 0n]; } });
         });
+
+        /* === C: arg4 sweep with arg3 = id0. === */
+        [
+            ["0", 0n], ["1", 1n], ["2", 2n], ["3", 3n], ["4", 4n],
+            ["0x10", 0x10n], ["0x40", 0x40n], ["0x80", 0x80n],
+            ["0x100", 0x100n], ["0x228", 0x228n]
+        ].forEach(function (e) {
+            shapes.push({ name: "A4=" + e[0],
+                args: function () { return [0n, 0n, id0, e[1], 0n, 0n]; } });
+        });
+
+        /* === D: arg5 sweep with arg3 = id0. === */
+        [
+            ["0", 0n], ["outBuf", outBuf], ["out+0x20", outBuf + 0x20n],
+            ["idsPtr", idsPtr], ["reqsPtr", reqsPtr], ["idBuf", idBuf],
+            ["idLoBuf", idLoBuf], ["outLenBuf", outLenBuf],
+            ["0x80", 0x80n], ["0x228", 0x228n]
+        ].forEach(function (e) {
+            shapes.push({ name: "A5=" + e[0],
+                args: function () { return [0n, 0n, id0, 0n, e[1], 0n]; } });
+        });
+
+        /* === G: with arg3 = id0, arg1 = idsPtr (the ids array) -- alternate arg2 and arg4. === */
+        for (var bi = 0; bi <= 8; bi++) {
+            shapes.push((function (y) {
+                return { name: "G1 b2=" + y,
+                    args: function () { return [idsPtr, BigInt(y), id0, 1n, outBuf, 0n]; } };
+            })(bi));
+        }
+        for (bi = 0; bi <= 8; bi++) {
+            shapes.push((function (y) {
+                return { name: "G2 b4=" + y,
+                    args: function () { return [0n, 0n, id0, BigInt(y), outBuf, 0n]; } };
+            })(bi));
+        }
 
         var counts = [1n];
         var liveIds = [id0];
@@ -450,48 +469,6 @@
             out("CALL", sh3.name + " -> " + hex(ret3)
                 + (changed3 ? "  BUF-CHANGED: " + hexBytes(got3).slice(0, 40) : ""),
                 (changed3 || (ret3 !== 0xen && ret3 !== 0x1n)) ? "ok" : "dim");
-        }
-
-        /* F: complete one request via write() on the pipe, then retry the baseline
-         *    shapes. A completed request may be the state the kernel wants. */
-        out("F-PRE", "completing one pending read via write(wfd,1)", "dim");
-        try {
-            var one = malloc(0x10);
-            root.write_buffer(one, new Uint8Array([0x41]));
-            S(SYS_WRITE, BigInt(wfd), one, 1n, 0n, 0n, 0n);
-        } catch (e) { }
-        for (var qi = 0; qi < 200; qi++) S(SYS_SCHED_YIELD, 0n, 0n, 0n, 0n, 0n, 0n);
-        if (!canary()) {
-            out("WEDGE", "after write completion canary failed", "err");
-            wedged = true;
-        }
-        if (!wedged) {
-            [
-                { name: "F id,1,out",      args: function () { return [id0, 1n, outBuf, 0n, 0n, 0n]; } },
-                { name: "F 0,0,id,1,out",  args: function () { return [0n, 0n, id0, 1n, outBuf, 0n]; } },
-                { name: "F 0,0,id,0,out",  args: function () { return [0n, 0n, id0, 0n, outBuf, 0n]; } },
-                { name: "F low32,1,out",   args: function () { return [idLow32, 1n, outBuf, 0n, 0n, 0n]; } },
-                { name: "F idsPtr,2,out",  args: function () { return [idsPtr, 2n, outBuf, 0n, 0n, 0n]; } },
-                { name: "F out,id,1",      args: function () { return [outBuf, id0, 1n, 0n, 0n, 0n]; } },
-                { name: "F reqsPtr,2,out", args: function () { return [reqsPtr, 2n, outBuf, 0n, 0n, 0n]; } },
-                { name: "F id,0,out",      args: function () { return [id0, 0n, outBuf, 0n, 0n, 0n]; } }
-            ].forEach(function (sh) {
-                if (wedged) return;
-                fill(outBuf, OUTLEN, 0xEE);
-                var aF = sh.args();
-                var retF = S(SYS_AIO_DEBUG_INFO, aF[0], aF[1], aF[2], aF[3], aF[4], aF[5]);
-                if (!canary()) {
-                    out("WEDGE", "shape=" + sh.name + " -> " + hex(retF), "err");
-                    wedged = true; return;
-                }
-                var gotF = readBytes(outBuf, OUTLEN);
-                var changedF = !bytesEqual(gotF, sentinel);
-                if (changedF) hits++;
-                if (retF !== 0xen) NON_EFAULT.push(sh.name + "=" + hex(retF));
-                out("CALL", sh.name + " -> " + hex(retF)
-                    + (changedF ? "  BUF-CHANGED: " + hexBytes(gotF).slice(0, 40) : ""),
-                    (changedF || (retF !== 0xen && retF !== 0x1n)) ? "ok" : "dim");
-            });
         }
 
         if (NON_EFAULT.length) {
