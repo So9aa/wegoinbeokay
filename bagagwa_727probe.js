@@ -386,6 +386,7 @@
             chip(elState, "ok", "leak wrote");
             chip(elVerdict, "ok", hits + " hit(s)");
             notify("727: LEAK WROTE -- " + hits + " hit(s)");
+            try { sendLogs(); } catch (e) { }
             return;
         }
         out("VERDICT", "no shape wrote to the buffer. Every call returned a small positive "
@@ -395,6 +396,7 @@
             "warn");
         chip(elState, "bad", "no leak");
         notify("727: no leak on 13.60");
+        try { sendLogs(); } catch (e) { }
     }
 
     document.getElementById("b727-run").onclick = function () {

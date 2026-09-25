@@ -1873,6 +1873,7 @@
                         : "Read the AIO reach row above: it is the one that decides Bagagwa's fate."), "sec");
                 nres(ok + "/" + PAYLOADS.length + " tiles ok" + (ARMED_OK ? " [ARM RAN -- see log]" : ""), "done");
                 paint("", null);
+                try { sendLogs(); } catch (e) { }
                 return;
             }
             runPayload(q.shift());
